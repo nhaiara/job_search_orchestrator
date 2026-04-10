@@ -1,0 +1,60 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Master profile data for the user, including skills, experience, and AI preferences.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "masterProfile": { "type": "string", "description": "The full Master Profile text (Markdown) - Cached from Drive." },
+        "masterProfileFileId": { "type": "string", "description": "The Google Drive File ID for the Master Profile document." },
+        "customRules": { "type": "string", "description": "Custom rules for Gemini to classify or disqualify jobs." },
+        "driveFolderId": { "type": "string", "description": "The Google Drive folder ID to monitor for .md files." },
+        "cvTemplate": { "type": "string", "description": "The LaTeX template for CVs." },
+        "clTemplate": { "type": "string", "description": "The LaTeX template for Cover Letters." },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "masterProfile"]
+    },
+    "JobApplication": {
+      "title": "Job Application",
+      "description": "Details of a specific job application and its status.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "uid": { "type": "string" },
+        "company": { "type": "string" },
+        "role": { "type": "string" },
+        "location": { "type": "string" },
+        "status": { 
+          "type": "string", 
+          "enum": ["💎 Manual", "🤖 Auto", "✅ Pronto", "🗑️ Descartada", "Enviada", "Entrevista", "Rejeitada", "Oferta"] 
+        },
+        "matchScore": { "type": "string", "enum": ["Altíssima", "Alta", "Média", "Baixa", "Incompatível"] },
+        "gapAnalysis": { "type": "string" },
+        "openingStrategy": { "type": "string" },
+        "keyStack": { "type": "string" },
+        "pilarAbreAlas": { "type": "string" },
+        "jobDescription": { "type": "string" },
+        "link": { "type": "string" },
+        "driveFileId": { "type": "string", "description": "ID of the source .md file in Google Drive" },
+        "driveFolderLink": { "type": "string", "description": "Link to the specific application folder in Drive" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "company", "role", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User specific profile and settings."
+    },
+    "/users/{userId}/applications/{applicationId}": {
+      "schema": "JobApplication",
+      "description": "Applications tracked by the user."
+    }
+  }
+}
