@@ -73,49 +73,110 @@ async function startServer() {
   });
 
   // API Routes
+  const getOrCreateFolder = async (driveClient: any, parentId: string, folderName: string) => {
+    const response = await driveClient.files.list({
+      q: `name = '${folderName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      fields: 'files(id)',
+    });
+    
+    if (response.data.files && response.data.files.length > 0) {
+      return response.data.files[0].id;
+    }
+    
+    const folder = await driveClient.files.create({
+      requestBody: {
+        name: folderName,
+        mimeType: 'application/vnd.google-apps.folder',
+        parents: [parentId]
+      },
+      fields: 'id'
+    });
+    
+    return folder.data.id;
+  };
+
+  const moveFile = async (driveClient: any, fileId: string, currentParents: string[], targetId: string) => {
+    const previousParents = currentParents.join(',');
+    await driveClient.files.update({
+      fileId: fileId,
+      addParents: targetId,
+      removeParents: previousParents,
+      fields: 'id, parents'
+    });
+  };
+
   app.post('/api/sync-drive', async (req, res) => {
     try {
-      const { folderId, accessToken } = req.body;
+      const { folderId, accessToken, processedFolderId } = req.body;
       if (!folderId) return res.status(400).json({ error: 'Folder ID is required' });
 
       const driveClient = getDriveInstance(accessToken);
       const response = await driveClient.files.list({
-        q: `'${folderId}' in parents and name contains '.md' and trashed = false`,
-        fields: 'files(id, name, createdTime, mimeType)',
+        q: `'${folderId}' in parents and (name contains '.md' or mimeType = 'application/vnd.google-apps.document') and trashed = false`,
+        fields: 'files(id, name, createdTime, mimeType, parents)',
       });
 
       const files = response.data.files || [];
       const results = [];
 
+      // Determine target folder for moving
+      let targetFolderId = processedFolderId;
+
       for (const file of files) {
         let content;
-        if (file.mimeType === 'application/vnd.google-apps.document') {
-          const exportResponse = await driveClient.files.export({
-            fileId: file.id!,
-            mimeType: 'text/plain',
-          });
-          content = exportResponse.data;
-        } else {
-          const contentResponse = await driveClient.files.get({
-            fileId: file.id!,
-            alt: 'media',
-          });
-          content = contentResponse.data;
-        }
+        try {
+          if (file.mimeType === 'application/vnd.google-apps.document') {
+            const exportResponse = await driveClient.files.export({
+              fileId: file.id!,
+              mimeType: 'text/plain',
+            });
+            content = exportResponse.data;
+          } else {
+            const contentResponse = await driveClient.files.get({
+              fileId: file.id!,
+              alt: 'media',
+            });
+            content = contentResponse.data;
+          }
 
-        results.push({
-          id: file.id,
-          name: file.name,
-          content: content,
-          createdAt: file.createdTime
-        });
+          results.push({
+            id: file.id,
+            name: file.name,
+            content: content,
+            createdAt: file.createdTime
+          });
+
+          // Move file to processed folder
+          if (file.id) {
+            try {
+              if (targetFolderId) {
+                await moveFile(driveClient, file.id, file.parents || [], targetFolderId);
+              } else {
+                throw new Error('No processed folder ID provided');
+              }
+            } catch (moveError) {
+              console.warn(`Failed to move to ${targetFolderId}, trying "sincronizadas":`, moveError);
+              try {
+                const fallbackId = await getOrCreateFolder(driveClient, folderId, 'sincronizadas');
+                targetFolderId = fallbackId; // Update for subsequent files
+                await moveFile(driveClient, file.id, file.parents || [], fallbackId);
+              } catch (fallbackError) {
+                console.error('Failed to move to fallback folder:', fallbackError);
+              }
+            }
+          }
+        } catch (fileError) {
+          console.error(`Error processing file ${file.name}:`, fileError);
+          // Continue with next file
+        }
       }
 
-      res.json({ files: results });
+      res.json({ files: results, processedFolderId: targetFolderId });
     } catch (error: any) {
       console.error('Error syncing drive:', error);
+      const errorMessage = error.response?.data?.error?.message || error.message || 'Failed to sync Google Drive';
       res.status(500).json({ 
-        error: error.message || 'Failed to sync Google Drive'
+        error: errorMessage
       });
     }
   });
@@ -128,7 +189,8 @@ async function startServer() {
       res.json({ message: 'Trash emptied successfully' });
     } catch (error: any) {
       console.error('Error emptying trash:', error);
-      res.status(500).json({ error: error.message });
+      const errorMessage = error.response?.data?.error?.message || error.message || 'Failed to empty trash';
+      res.status(500).json({ error: errorMessage });
     }
   });
 
@@ -220,33 +282,40 @@ async function startServer() {
       await createPdf(`Cover Letter - ${name}.pdf`, clContent);
 
       // 3. Move original file to processed if originalFileId exists
-      if (originalFileId && processedFolderId) {
+      if (originalFileId) {
         try {
-          // Get current parents
           const file = await driveClient.files.get({
             fileId: originalFileId,
             fields: 'parents'
           });
-          const previousParents = (file.data.parents || []).join(',');
+          const currentParents = file.data.parents || [];
           
-          await driveClient.files.update({
-            fileId: originalFileId,
-            addParents: processedFolderId,
-            removeParents: previousParents,
-            fields: 'id, parents'
-          });
-        } catch (moveError) {
-          console.warn('Failed to move file to processed folder:', moveError);
+          try {
+            if (processedFolderId) {
+              await moveFile(driveClient, originalFileId, currentParents, processedFolderId);
+            } else {
+              throw new Error('No processed folder ID');
+            }
+          } catch (moveError) {
+            console.warn('Failed to move to processedFolderId, trying fallback:', moveError);
+            const parentId = currentParents[0];
+            if (parentId) {
+              const fallbackId = await getOrCreateFolder(driveClient, parentId, 'sincronizadas');
+              await moveFile(driveClient, originalFileId, currentParents, fallbackId);
+            }
+          }
+        } catch (error) {
+          console.warn('Failed to move original file:', error);
         }
       }
 
       res.json({ folderId, folderLink });
     } catch (error: any) {
       console.error('Error generating application:', error);
-      let errorMessage = error.message || 'Failed to generate application files';
+      let errorMessage = error.response?.data?.error?.message || error.message || 'Failed to generate application files';
       
       if (errorMessage.includes('storage quota') || errorMessage.includes('quota exceeded')) {
-        errorMessage = 'Cota de armazenamento do Google Drive excedida. Por favor, limpe espaço no seu Drive ou na conta do Service Account.';
+        errorMessage = 'Cota de armazenamento do Google Drive excedida. Por favor, limpe espaço no seu Drive.';
       }
 
       res.status(500).json({ 
@@ -290,8 +359,9 @@ async function startServer() {
       res.json({ content });
     } catch (error: any) {
       console.error('Error fetching drive file:', error);
+      const errorMessage = error.response?.data?.error?.message || error.message || 'Failed to fetch file from Google Drive';
       res.status(500).json({ 
-        error: error.message || 'Failed to fetch file from Google Drive'
+        error: errorMessage
       });
     }
   });

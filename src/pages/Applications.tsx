@@ -4,6 +4,7 @@ import { db } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
+import { extractFileId } from '../lib/driveUtils';
 import { analyzeJob, generateLevel1Questions, generateLevel1Final, generateLevel2, generateLevel3 } from '../lib/gemini';
 import { 
   Search, 
@@ -144,7 +145,8 @@ export default function Applications() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           folderId,
-          accessToken: tokens?.access_token
+          accessToken: tokens?.access_token,
+          processedFolderId: PROCESSED_FOLDER_ID
         })
       });
       
@@ -208,8 +210,8 @@ export default function Applications() {
       setGenStatus('Buscando currículo base no Drive...');
       
       // Use template IDs from profile or fallback to constants
-      const cvLevel1Id = userData?.cvLevel1FileId || CV_LEVEL_1_2_ID;
-      const cvLevel23Id = userData?.cvLevel23FileId || CV_LEVEL_3_ID;
+      const cvLevel1Id = extractFileId(userData?.cvLevel1FileId || CV_LEVEL_1_2_ID);
+      const cvLevel23Id = extractFileId(userData?.cvLevel23FileId || CV_LEVEL_3_ID);
       
       const cvId = (isLevel1 || isLevel2) ? cvLevel1Id : cvLevel23Id;
       const cvResponse = await fetch('/api/get-drive-file', {

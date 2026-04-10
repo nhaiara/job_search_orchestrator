@@ -3,9 +3,10 @@ import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
 import { motion } from 'motion/react';
-import { Save, UserCircle, FileText, Code, Zap, Plus, AlertCircle } from 'lucide-react';
+import { Save, UserCircle, FileText, Code, Zap, Plus, AlertCircle, RefreshCw } from 'lucide-react';
 import { AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
+import { extractFileId } from '../lib/driveUtils';
 
 const DEFAULT_RULES = `1. Altíssima: Fintech + AI/Data + Berlin ou remoto + Senioridade (Manager/Team Lead) + ≥80% de match entre os requisitos/responsabilidades e meu perfil master. Status sugerido: "💎 Manual".
 2. Alta: AI Platform + hibrida + ≥70% de match entre os requisitos/responsabilidades e meu perfil master. Status sugerido: "🤖 Auto".
@@ -26,8 +27,25 @@ export default function Profile() {
     cvLevel23FileId: ''
   });
   const [syncingProfile, setSyncingProfile] = useState(false);
+  const [googleTokens, setGoogleTokens] = useState<any>(() => {
+    const saved = localStorage.getItem('google_drive_tokens');
+    return saved ? JSON.parse(saved) : null;
+  });
 
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === 'GOOGLE_AUTH_SUCCESS') {
+        const tokens = event.data.tokens;
+        setGoogleTokens(tokens);
+        localStorage.setItem('google_drive_tokens', JSON.stringify(tokens));
+        setNotification({ message: 'Google Drive conectado com sucesso!', type: 'success' });
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
 
   useEffect(() => {
     if (notification) {
@@ -61,31 +79,51 @@ export default function Profile() {
     if (!user) return;
     setSaving(true);
     try {
-      await setDoc(doc(db, 'users', user.uid), {
+      // Clean up IDs before saving
+      const cleanedProfile = {
         ...profile,
+        masterProfileFileId: extractFileId(profile.masterProfileFileId),
+        cvLevel1FileId: extractFileId(profile.cvLevel1FileId),
+        cvLevel23FileId: extractFileId(profile.cvLevel23FileId),
+        driveFolderId: extractFileId(profile.driveFolderId)
+      };
+
+      await setDoc(doc(db, 'users', user.uid), {
+        ...cleanedProfile,
         uid: user.uid,
         name: user.displayName,
         email: user.email,
         updatedAt: serverTimestamp()
       }, { merge: true });
-      setNotification({ message: 'Perfil salvo com sucesso!', type: 'success' });
+      
+      setProfile(cleanedProfile);
+      setNotification({ message: 'Configurações salvas com sucesso!', type: 'success' });
     } catch (error) {
       console.error('Error saving profile:', error);
-      setNotification({ message: 'Erro ao salvar perfil.', type: 'error' });
+      setNotification({ message: 'Erro ao salvar configurações.', type: 'error' });
     } finally {
       setSaving(false);
     }
   };
 
-  const extractFileId = (input: string) => {
-    // Handle full URL or just ID
-    const match = input.match(/[-\w]{25,}/);
-    return match ? match[0] : input;
+  const handleConnectGoogle = async () => {
+    try {
+      const response = await fetch('/api/auth/google/url');
+      const { url } = await response.json();
+      window.open(url, 'google_auth', 'width=600,height=700');
+    } catch (error) {
+      setNotification({ message: 'Erro ao conectar com Google Drive.', type: 'error' });
+    }
   };
 
   const handleSyncProfile = async () => {
     if (!profile.masterProfileFileId) {
       setNotification({ message: 'Insira o Link ou ID do arquivo primeiro.', type: 'error' });
+      return;
+    }
+
+    if (!googleTokens) {
+      handleConnectGoogle();
       return;
     }
 
@@ -95,7 +133,10 @@ export default function Profile() {
       const response = await fetch('/api/get-drive-file', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileId })
+        body: JSON.stringify({ 
+          fileId,
+          accessToken: googleTokens?.access_token
+        })
       });
 
       const data = await response.json();
@@ -120,14 +161,25 @@ export default function Profile() {
           <h2 className="text-3xl font-bold text-slate-900">Configurações</h2>
           <p className="text-slate-500 mt-1">Gerencie sua identidade profissional e modelos de automação.</p>
         </div>
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200 disabled:opacity-50"
-        >
-          <Save size={18} />
-          {saving ? 'Salvando...' : 'Salvar Alterações'}
-        </button>
+        <div className="flex items-center gap-4">
+          {!googleTokens && (
+            <button
+              onClick={handleConnectGoogle}
+              className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors"
+            >
+              <RefreshCw size={16} />
+              Conectar Google Drive
+            </button>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-2 px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200 disabled:opacity-50"
+          >
+            <Save size={18} />
+            {saving ? 'Salvando...' : 'Salvar Alterações'}
+          </button>
+        </div>
       </header>
 
       <div className="grid grid-cols-1 gap-8">

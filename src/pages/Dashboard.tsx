@@ -34,6 +34,7 @@ const PROCESSED_FOLDER_ID = '1kjYwJliWojpWm0TfbGDeTp3-9foVES8_';
 import { Link } from 'react-router-dom';
 import { AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
+import { extractFileId } from '../lib/driveUtils';
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -82,8 +83,8 @@ export default function Dashboard() {
       setGenStatus('Buscando currículo base no Drive...');
       
       // Use template IDs from profile or fallback to constants
-      const cvLevel1Id = userData?.cvLevel1FileId || CV_LEVEL_1_2_ID;
-      const cvLevel23Id = userData?.cvLevel23FileId || CV_LEVEL_3_ID;
+      const cvLevel1Id = extractFileId(userData?.cvLevel1FileId || CV_LEVEL_1_2_ID);
+      const cvLevel23Id = extractFileId(userData?.cvLevel23FileId || CV_LEVEL_3_ID);
       
       const cvId = (isLevel1 || isLevel2) ? cvLevel1Id : cvLevel23Id;
       const cvResponse = await fetch('/api/get-drive-file', {
@@ -349,7 +350,8 @@ export default function Dashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           folderId,
-          accessToken: tokens?.access_token
+          accessToken: tokens?.access_token,
+          processedFolderId: PROCESSED_FOLDER_ID
         })
       });
       
