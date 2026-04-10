@@ -23,35 +23,6 @@ async function startServer() {
   });
 
   // Google Drive Setup
-  const formatPrivateKey = (key: string | undefined) => {
-    if (!key) return '';
-    
-    // 1. Remove any surrounding quotes (common when pasting into env vars)
-    let k = key.trim();
-    k = k.replace(/^['"]|['"]$/g, '');
-    
-    // 2. Handle escaped newlines (literal "\n" strings)
-    k = k.replace(/\\n/g, '\n');
-    
-    // 3. If it's all on one line (except headers), it might be missing newlines
-    // But usually, the \n replacement handles this.
-    
-    // 4. Ensure PEM headers/footers are exactly correct
-    const header = '-----BEGIN PRIVATE KEY-----';
-    const footer = '-----END PRIVATE KEY-----';
-    
-    if (!k.includes(header)) k = header + '\n' + k;
-    if (!k.includes(footer)) k = k + '\n' + footer;
-    
-    // 5. Clean up any double newlines or spaces around the headers
-    k = k.replace(/-----BEGIN PRIVATE KEY-----[\s\n]*/, header + '\n');
-    k = k.replace(/[\s\n]*-----END PRIVATE KEY-----/, '\n' + footer);
-    
-    return k.trim();
-  };
-
-  const driveEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-  const driveKey = formatPrivateKey(process.env.GOOGLE_PRIVATE_KEY);
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
@@ -62,23 +33,13 @@ async function startServer() {
   );
 
   const getDriveInstance = (accessToken?: string) => {
-    if (accessToken) {
-      const auth = new google.auth.OAuth2();
-      auth.setCredentials({ access_token: accessToken });
-      return google.drive({ version: 'v3', auth });
+    if (!accessToken) {
+      throw new Error('Google Drive access token is required. Please connect your Drive.');
     }
-    
-    const auth = new google.auth.GoogleAuth({
-      credentials: {
-        client_email: driveEmail,
-        private_key: driveKey,
-      },
-      scopes: ['https://www.googleapis.com/auth/drive'],
-    });
+    const auth = new google.auth.OAuth2();
+    auth.setCredentials({ access_token: accessToken });
     return google.drive({ version: 'v3', auth });
   };
-
-  const drive = getDriveInstance();
 
   // OAuth Routes
   app.get('/api/auth/google/url', (req, res) => {
@@ -161,7 +122,9 @@ async function startServer() {
 
   app.post('/api/cleanup-drive', async (req, res) => {
     try {
-      await drive.files.emptyTrash();
+      const { accessToken } = req.body;
+      const driveClient = getDriveInstance(accessToken);
+      await driveClient.files.emptyTrash();
       res.json({ message: 'Trash emptied successfully' });
     } catch (error: any) {
       console.error('Error emptying trash:', error);
