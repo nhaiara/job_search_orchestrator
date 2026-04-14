@@ -56,6 +56,8 @@ export default function Applications() {
   });
   const [questions, setQuestions] = useState<string[]>([]);
   const [answers, setAnswers] = useState<{[key: string]: string}>({});
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterStatus, setFilterStatus] = useState<string>('All');
   const [newApp, setNewApp] = useState({
     company: '',
     role: '',
@@ -440,6 +442,16 @@ export default function Applications() {
     }
   };
 
+  const filteredApps = apps.filter(app => {
+    const matchesSearch = 
+      app.company?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      app.role?.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    const matchesFilter = filterStatus === 'All' || app.status === filterStatus;
+    
+    return matchesSearch && matchesFilter;
+  });
+
   return (
     <div className="space-y-8">
       <header className="flex justify-between items-end">
@@ -471,19 +483,35 @@ export default function Applications() {
       </header>
 
       {/* Filters & Search */}
-      <div className="flex gap-4 items-center bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
-        <div className="flex-1 relative">
+      <div className="flex flex-col md:flex-row gap-4 items-center bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
+        <div className="flex-1 relative w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
           <input 
             type="text" 
             placeholder="Buscar por empresa ou cargo..." 
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
             className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-all"
           />
         </div>
-        <button className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors">
-          <Filter size={18} />
-          Filtros
-        </button>
+        <div className="flex items-center gap-2 w-full md:w-auto">
+          <Filter size={18} className="text-slate-400" />
+          <select 
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            className="flex-1 md:flex-none px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors outline-none bg-white"
+          >
+            <option value="All">Todos os Status</option>
+            <option value="💎 Manual">💎 Manual</option>
+            <option value="🤖 Auto">🤖 Auto</option>
+            <option value="✅ Pronto">✅ Pronto</option>
+            <option value="Enviada">Enviada</option>
+            <option value="Entrevista">Entrevista</option>
+            <option value="Aguardando feedback">Aguardando feedback</option>
+            <option value="Rejeitada">Rejeitada</option>
+            <option value="🗑️ Descartada">🗑️ Descartada</option>
+          </select>
+        </div>
       </div>
 
       {/* Applications List */}
@@ -503,12 +531,12 @@ export default function Applications() {
                 <tr>
                   <td colSpan={4} className="px-6 py-12 text-center text-slate-400">Carregando aplicações...</td>
                 </tr>
-              ) : apps.length === 0 ? (
+              ) : filteredApps.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-6 py-12 text-center text-slate-400">Nenhuma vaga encontrada.</td>
                 </tr>
               ) : (
-                apps.map((app) => (
+                filteredApps.map((app) => (
                   <tr 
                     key={app.id} 
                     className="hover:bg-slate-50/50 transition-colors group cursor-pointer"
