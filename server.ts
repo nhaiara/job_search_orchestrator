@@ -32,12 +32,12 @@ async function startServer() {
     `${process.env.APP_URL || 'http://localhost:3000'}/auth/google/callback`
   );
 
-  const getDriveInstance = (accessToken?: string) => {
+  const getDriveInstance = (accessToken?: string, refreshToken?: string) => {
     if (!accessToken) {
       throw new Error('Google Drive access token is required. Please connect your Drive.');
     }
-    const auth = new google.auth.OAuth2();
-    auth.setCredentials({ access_token: accessToken });
+    const auth = new google.auth.OAuth2(clientId, clientSecret);
+    auth.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
     return google.drive({ version: 'v3', auth });
   };
 
@@ -105,22 +105,83 @@ async function startServer() {
     });
   };
 
+  app.post('/api/scrape-job', async (req, res) => {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'URL is required' });
+
+    let browser;
+    try {
+      browser = await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+      });
+      const page = await browser.newPage();
+      
+      // Set a realistic user agent
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+      
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+
+      // Extract text content and basic metadata
+      const data = await page.evaluate(() => {
+        // Remove script and style elements
+        const scripts = document.querySelectorAll('script, style, nav, footer, header, noscript');
+        scripts.forEach(s => s.remove());
+
+        // Try to find the job description container (common patterns)
+        const selectors = [
+          '[class*="job-description"]',
+          '[class*="jobDescription"]',
+          '[id*="job-description"]',
+          '[class*="description"]',
+          'main',
+          'article',
+          '.job-info',
+          '#content'
+        ];
+
+        let content = '';
+        for (const selector of selectors) {
+          const el = document.querySelector(selector) as HTMLElement;
+          if (el && el.innerText && el.innerText.length > 500) {
+            content = el.innerText;
+            break;
+          }
+        }
+
+        if (!content) {
+          content = document.body.innerText;
+        }
+
+        return {
+          title: document.title,
+          content: content.trim()
+        };
+      });
+
+      res.json(data);
+    } catch (error: any) {
+      console.error('Scraping error:', error);
+      res.status(500).json({ error: `Failed to scrape URL: ${error.message}` });
+    } finally {
+      if (browser) await browser.close();
+    }
+  });
+
   app.post('/api/sync-drive', async (req, res) => {
     try {
-      const { folderId, accessToken, processedFolderId } = req.body;
+      const { folderId, accessToken, refreshToken } = req.body;
       if (!folderId) return res.status(400).json({ error: 'Folder ID is required' });
 
-      const driveClient = getDriveInstance(accessToken);
+      const driveClient = getDriveInstance(accessToken, refreshToken);
       const response = await driveClient.files.list({
-        q: `'${folderId}' in parents and (name contains '.md' or mimeType = 'application/vnd.google-apps.document') and trashed = false`,
+        q: `'${folderId}' in parents and (name contains '.md' or mimeType = 'application/vnd.google-apps.document' or mimeType = 'text/plain') and trashed = false`,
         fields: 'files(id, name, createdTime, mimeType, parents)',
+        pageSize: 1000,
       });
 
       const files = response.data.files || [];
       const results = [];
-
-      // Determine target folder for moving
-      let targetFolderId = processedFolderId;
 
       for (const file of files) {
         let content;
@@ -143,48 +204,57 @@ async function startServer() {
             id: file.id,
             name: file.name,
             content: content,
-            createdAt: file.createdTime
+            createdAt: file.createdTime,
+            parents: file.parents
           });
-
-          // Move file to processed folder
-          if (file.id) {
-            try {
-              if (targetFolderId) {
-                await moveFile(driveClient, file.id, file.parents || [], targetFolderId);
-              } else {
-                throw new Error('No processed folder ID provided');
-              }
-            } catch (moveError) {
-              console.warn(`Failed to move to ${targetFolderId}, trying "sincronizadas":`, moveError);
-              try {
-                const fallbackId = await getOrCreateFolder(driveClient, folderId, 'sincronizadas');
-                targetFolderId = fallbackId; // Update for subsequent files
-                await moveFile(driveClient, file.id, file.parents || [], fallbackId);
-              } catch (fallbackError) {
-                console.error('Failed to move to fallback folder:', fallbackError);
-              }
-            }
-          }
         } catch (fileError) {
           console.error(`Error processing file ${file.name}:`, fileError);
-          // Continue with next file
         }
       }
 
-      res.json({ files: results, processedFolderId: targetFolderId });
+      res.json({ files: results });
     } catch (error: any) {
       console.error('Error syncing drive:', error);
+      const statusCode = error.response?.status || 500;
       const errorMessage = error.response?.data?.error?.message || error.message || 'Failed to sync Google Drive';
-      res.status(500).json({ 
-        error: errorMessage
-      });
+      
+      if (error.response?.data?.error) {
+        console.error('Detailed Drive Error:', JSON.stringify(error.response.data.error));
+      }
+      
+      res.status(statusCode).json({ error: errorMessage });
+    }
+  });
+
+  app.post('/api/move-file', async (req, res) => {
+    try {
+      const { fileId, currentParents, targetFolderId, accessToken, refreshToken, rootFolderId } = req.body;
+      if (!fileId || !accessToken) return res.status(400).json({ error: 'Missing required fields' });
+
+      const driveClient = getDriveInstance(accessToken, refreshToken);
+      
+      let finalTargetId = targetFolderId;
+      if (!finalTargetId && rootFolderId) {
+        finalTargetId = await getOrCreateFolder(driveClient, rootFolderId, 'sincronizadas');
+      }
+
+      if (!finalTargetId) {
+        return res.status(400).json({ error: 'Target folder ID is required' });
+      }
+
+      await moveFile(driveClient, fileId, currentParents || [], finalTargetId);
+      res.json({ success: true, targetFolderId: finalTargetId });
+    } catch (error: any) {
+      console.error('Error moving file:', error);
+      const statusCode = error.response?.status || 500;
+      res.status(statusCode).json({ error: error.message });
     }
   });
 
   app.post('/api/cleanup-drive', async (req, res) => {
     try {
-      const { accessToken } = req.body;
-      const driveClient = getDriveInstance(accessToken);
+      const { accessToken, refreshToken } = req.body;
+      const driveClient = getDriveInstance(accessToken, refreshToken);
       await driveClient.files.emptyTrash();
       res.json({ message: 'Trash emptied successfully' });
     } catch (error: any) {
@@ -196,11 +266,11 @@ async function startServer() {
 
   app.post('/api/generate-application', async (req, res) => {
     try {
-      const { name, company, role, cvContent, clContent, outputFolderId, processedFolderId, originalFileId, accessToken } = req.body;
+      const { name, company, role, cvContent, clContent, outputFolderId, processedFolderId, originalFileId, accessToken, refreshToken } = req.body;
       
       if (!outputFolderId) return res.status(400).json({ error: 'Output Folder ID is required' });
 
-      const driveClient = getDriveInstance(accessToken);
+      const driveClient = getDriveInstance(accessToken, refreshToken);
 
       // 1. Create Folder: "Data - Empresa - Cargo"
       const date = new Date().toISOString().split('T')[0];
@@ -326,10 +396,10 @@ async function startServer() {
 
   app.post('/api/get-drive-file', async (req, res) => {
     try {
-      const { fileId, accessToken } = req.body;
+      const { fileId, accessToken, refreshToken } = req.body;
       if (!fileId) return res.status(400).json({ error: 'File ID is required' });
 
-      const driveClient = getDriveInstance(accessToken);
+      const driveClient = getDriveInstance(accessToken, refreshToken);
 
       // First, get file metadata to check mimeType
       const fileMetadata = await driveClient.files.get({

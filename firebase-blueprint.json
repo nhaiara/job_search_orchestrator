@@ -12,8 +12,13 @@
         "masterProfileFileId": { "type": "string", "description": "The Google Drive File ID for the Master Profile document." },
         "customRules": { "type": "string", "description": "Custom rules for Gemini to classify or disqualify jobs." },
         "driveFolderId": { "type": "string", "description": "The Google Drive folder ID to monitor for .md files." },
-        "cvTemplate": { "type": "string", "description": "The LaTeX template for CVs." },
-        "clTemplate": { "type": "string", "description": "The LaTeX template for Cover Letters." },
+        "outputFolderId": { "type": "string", "description": "The Google Drive folder ID where generated applications will be saved." },
+        "processedFolderId": { "type": "string", "description": "The Google Drive folder ID where processed .md files will be moved." },
+        "cvDiamondFileId": { "type": "string", "description": "The Google Drive File ID for CV Diamond." },
+        "cvGoldFileId": { "type": "string", "description": "The Google Drive File ID for CV Gold." },
+        "cvSilverFileId": { "type": "string", "description": "The Google Drive File ID for CV Silver." },
+        "clDiamondFileId": { "type": "string", "description": "The Google Drive File ID for Cover Letter Diamond." },
+        "clGoldFileId": { "type": "string", "description": "The Google Drive File ID for Cover Letter Gold." },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "masterProfile"]
@@ -30,13 +35,14 @@
         "location": { "type": "string" },
         "status": { 
           "type": "string", 
-          "enum": ["💎 Manual", "🤖 Auto", "✅ Pronto", "🗑️ Descartada", "Enviada", "Entrevista", "Rejeitada", "Oferta"] 
+          "enum": ["📥 Nova", "⏳ Input IA", "⚙️ Gerar Docs", "✅ Aplicar", "📩 Triagem", "🕰️ Feedback", "🗣️ Entrevistas", "🏆 Proposta", "🤝 Sucesso", "❌ Rejeitada", "🗑️ Descarte"] 
         },
-        "matchScore": { "type": "string", "enum": ["Altíssima", "Alta", "Média", "Baixa", "Incompatível"] },
-        "gapAnalysis": { "type": "string" },
-        "openingStrategy": { "type": "string" },
-        "keyStack": { "type": "string" },
-        "pilarAbreAlas": { "type": "string" },
+        "matchScore": { "type": "string", "enum": ["Diamond", "Gold", "Silver", "Discard"] },
+        "totalScore": { "type": "number" },
+        "matchReasoning": { "type": "string" },
+        "goldenPillar": { "type": "string" },
+        "diamondQuestions": { "type": "array", "items": { "type": "string" } },
+        "discardReason": { "type": "string" },
         "jobDescription": { "type": "string" },
         "link": { "type": "string" },
         "driveFileId": { "type": "string", "description": "ID of the source .md file in Google Drive" },

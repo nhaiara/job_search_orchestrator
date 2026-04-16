@@ -3,7 +3,7 @@
   "appId": "1:581946818665:web:7b27e87afa4075df3122f8",
   "apiKey": "AIzaSyC2jrAy37SJSS8nZKvov3L1mLzRu_uNS1g",
   "authDomain": "automacao-carreira.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-e03b471e-0e7f-4366-884f-74024aca8d38",
+  "firestoreDatabaseId": "career-automation-db-v2",
   "storageBucket": "automacao-carreira.firebasestorage.app",
   "messagingSenderId": "581946818665",
   "measurementId": ""

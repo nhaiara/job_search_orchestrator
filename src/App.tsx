@@ -5,7 +5,7 @@ import Layout from './components/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Applications from './pages/Applications';
-import Profile from './pages/Profile';
+import AppSettings from './pages/AppSettings';
 
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -35,7 +35,7 @@ function AppContent() {
         <Route path="/login" element={<Login />} />
         <Route path="/" element={<PrivateRoute><Dashboard /></PrivateRoute>} />
         <Route path="/applications" element={<PrivateRoute><Applications /></PrivateRoute>} />
-        <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
+        <Route path="/profile" element={<PrivateRoute><AppSettings /></PrivateRoute>} />
       </Routes>
     </Router>
   );

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { collection, query, onSnapshot, orderBy, limit, addDoc, doc, updateDoc, getDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { collection, query, onSnapshot, orderBy, limit, addDoc, doc, updateDoc, getDoc, getDocs } from 'firebase/firestore';
+import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
 import { motion } from 'motion/react';
 import { 
@@ -18,14 +18,14 @@ import {
   Send,
   Loader2,
   Zap,
-  RefreshCw
+  RefreshCw,
+  Trash2
 } from 'lucide-react';
 import { 
-  generateLevel1Questions, 
-  generateLevel1Final, 
-  generateLevel2, 
-  generateLevel3,
-  analyzeJob
+  analyzeJobMatch,
+  generateDiamond,
+  generateGold,
+  generateSilver
 } from '../lib/gemini';
 const CV_LEVEL_3_ID = '1eCyJTG_IItfwzk3EBzRGCvTX1sT7g49UaD-x8gGC0rE';
 const CV_LEVEL_1_2_ID = '11Icr9xJSx-Dr8piplsltIai9oOeu2qdh-qIqAaiRQS4';
@@ -52,6 +52,7 @@ export default function Dashboard() {
   const [pendingSync, setPendingSync] = useState(false);
   const [genStep, setGenStep] = useState<'idle' | 'questions' | 'finalizing'>('idle');
   const [genStatus, setGenStatus] = useState<string>('');
+  const [appToDelete, setAppToDelete] = useState<string | null>(null);
   const [googleTokens, setGoogleTokens] = useState<any>(() => {
     const saved = localStorage.getItem('google_drive_tokens');
     return saved ? JSON.parse(saved) : null;
@@ -64,6 +65,73 @@ export default function Dashboard() {
 
   const [topMatch, setTopMatch] = useState<any>(null);
 
+  const updateStatus = async (id: string, status: string) => {
+    if (!user) return;
+    await updateDoc(doc(db, `users/${user.uid}/applications`, id), {
+      status,
+      updatedAt: new Date().toISOString()
+    });
+    if (selectedApp?.id === id) {
+      setSelectedApp({ ...selectedApp, status });
+    }
+  };
+
+  const deleteApp = async (id: string) => {
+    if (!user) return;
+    try {
+      await updateDoc(doc(db, `users/${user.uid}/applications`, id), {
+        status: '🗑️ Descarte',
+        updatedAt: new Date().toISOString()
+      });
+      setAppToDelete(null);
+      setNotification({ message: 'Vaga movida para descarte.', type: 'success' });
+    } catch (error) {
+      console.error('Error deleting app:', error);
+      setNotification({ message: 'Erro ao descartar vaga.', type: 'error' });
+    }
+  };
+
+  const handleReanalyzeApp = async (app: any) => {
+    if (!user) return;
+    setSyncing(true);
+    try {
+      const userDoc = await getDoc(doc(db, `users/${user.uid}`));
+      const userData = userDoc.data();
+      const masterProfile = userData?.masterProfile || '';
+      const geminiApiKey = userData?.geminiApiKey || '';
+      const geminiModel = userData?.geminiModel || 'gemini-2.5-flash';
+
+      const analysis = await analyzeJobMatch(app.jobDescription, masterProfile, geminiApiKey, geminiModel);
+      const status = analysis.tier === 'Diamond' ? '⏳ Input IA' : 
+                     analysis.tier === 'Discard' ? '🗑️ Descarte' : 
+                     '⚙️ Gerar Docs';
+      
+      const updatedData = {
+        company: analysis.company || app.company,
+        role: analysis.role || app.role,
+        location: analysis.location || app.location,
+        matchScore: analysis.tier,
+        totalScore: analysis.totalScore,
+        matchReasoning: analysis.reason,
+        goldenPillar: analysis.goldenPillar,
+        diamondQuestions: analysis.diamondQuestions || [],
+        status: status,
+        updatedAt: new Date().toISOString()
+      };
+      
+      await updateDoc(doc(db, `users/${user.uid}/applications`, app.id), updatedData);
+      if (selectedApp?.id === app.id) {
+        setSelectedApp({ ...selectedApp, ...updatedData });
+      }
+      setNotification({ message: 'Análise atualizada!', type: 'success' });
+    } catch (error: any) {
+      console.error('Error reanalyzing app:', error);
+      setNotification({ message: `Erro: ${error.message}`, type: 'error' });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const handleGenerateApplication = async () => {
     if (!selectedApp || !user) return;
     setGenerating(true);
@@ -71,52 +139,135 @@ export default function Dashboard() {
     setNotification(null);
 
     try {
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
-      const userData = userDoc.data();
+      const path = `users/${user.uid}`;
+      let userData;
+      try {
+        const userDoc = await getDoc(doc(db, path));
+        userData = userDoc.data();
+      } catch (error) {
+        handleFirestoreError(error, OperationType.GET, path);
+      }
+      
       const masterProfile = userData?.masterProfile || '';
       const name = userData?.name || 'Nhaiara Moura';
 
       const match = selectedApp.matchScore;
-      const isLevel1 = match === 'Altíssima';
-      const isLevel2 = match === 'Alta' || match === 'Média';
+      const isDiamond = match === 'Diamond';
+      const isGold = match === 'Gold';
+      const isSilver = match === 'Silver';
 
       setGenStatus('Buscando currículo base no Drive...');
       
       // Use template IDs from profile or fallback to constants
-      const cvLevel1Id = extractFileId(userData?.cvLevel1FileId || CV_LEVEL_1_2_ID);
-      const cvLevel23Id = extractFileId(userData?.cvLevel23FileId || CV_LEVEL_3_ID);
+      const cvDiamondId = extractFileId(userData?.cvDiamondFileId || CV_LEVEL_1_2_ID);
+      const cvGoldId = extractFileId(userData?.cvGoldFileId || CV_LEVEL_1_2_ID);
+      const cvSilverId = extractFileId(userData?.cvSilverFileId || CV_LEVEL_3_ID);
+      const outputFolderId = extractFileId(userData?.outputFolderId || OUTPUT_FOLDER_ID);
+      const processedFolderId = extractFileId(userData?.processedFolderId || PROCESSED_FOLDER_ID);
       
-      const cvId = (isLevel1 || isLevel2) ? cvLevel1Id : cvLevel23Id;
+      const clDiamondId = extractFileId(userData?.clDiamondFileId);
+      const clGoldId = extractFileId(userData?.clGoldFileId);
+      
+      let cvId = cvSilverId;
+      if (isDiamond) cvId = cvDiamondId;
+      else if (isGold) cvId = cvGoldId;
+
       const cvResponse = await fetch('/api/get-drive-file', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           fileId: cvId,
-          accessToken: googleTokens?.access_token
+          accessToken: googleTokens?.access_token,
+          refreshToken: googleTokens?.refresh_token
         })
       });
       const cvData = await cvResponse.json();
       const cvContent = cvData.content;
 
-      if (isLevel1 && genStep === 'idle') {
+      if (isDiamond && genStep === 'idle') {
         setGenStatus('IA analisando vaga e gerando perguntas...');
-        const result = await generateLevel1Questions(selectedApp.jobDescription, masterProfile, cvContent);
-        setQuestions(result.questions);
-        setGenStep('questions');
+        // Questions are already in the app document from the sync phase
+        if (selectedApp.diamondQuestions && selectedApp.diamondQuestions.length > 0) {
+          setQuestions(selectedApp.diamondQuestions);
+          setGenStep('questions');
+        } else {
+          // Fallback if questions weren't generated during sync
+          const analysis = await analyzeJobMatch(selectedApp.jobDescription, masterProfile, userData?.geminiApiKey);
+          setQuestions(analysis.diamondQuestions || []);
+          setGenStep('questions');
+        }
+        
         // Scroll to questions after a short delay to allow rendering
         setTimeout(() => {
           questionsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 100);
-      } else if (isLevel1 && genStep === 'questions') {
+      } else if (isDiamond && genStep === 'questions') {
         setGenStep('finalizing');
-        setGenStatus('IA gerando documentos finais...');
+        setGenStatus('IA gerando documentos finais Diamond...');
         // Scroll to status
         setTimeout(() => {
           genStatusRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 100);
         const answersStr = Object.entries(answers).map(([q, a]) => `Q: ${q}\nA: ${a}`).join('\n\n');
-        const result = await generateLevel1Final(selectedApp.jobDescription, masterProfile, cvContent, answersStr);
         
+        // Fetch CL template if exists
+        let clTemplate = '';
+        if (clDiamondId) {
+          try {
+            const clResp = await fetch('/api/get-drive-file', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                fileId: clDiamondId,
+                accessToken: googleTokens?.access_token,
+                refreshToken: googleTokens?.refresh_token
+              })
+            });
+            const clData = await clResp.json();
+            clTemplate = clData.content || '';
+          } catch (e) {
+            console.error('Error fetching CL template:', e);
+          }
+        }
+
+        const result = await generateDiamond(selectedApp.jobDescription, cvContent, answersStr, clTemplate, userData?.geminiApiKey);
+        
+        // Format Diamond result to Markdown for the API
+        const tunedCV = `
+# Nhaiara Moura
+## ${result.CUSTOM_HEADLINE}
+
+${result.SUMMARY}
+
+### Core Competencies
+- **${result.SKILL_NAME1}**: ${result.SKILL_DESCRIPTION1}
+- **${result.SKILL_NAME2}**: ${result.SKILL_DESCRIPTION2}
+- **${result.SKILL_NAME3}**: ${result.SKILL_DESCRIPTION3}
+- **${result.SKILL_NAME4}**: ${result.SKILL_DESCRIPTION4}
+
+### Professional Experience
+
+#### Taxfix
+${result.EXP_TAXFIX}
+
+#### Mimi Hearing Technologies
+${result.EXP_MIMI}
+
+#### Tech Lead / Senior Engineer
+${result.EXP_TECHLEAD}
+
+#### SDET / QA Engineer
+${result.EXP_SDET}
+        `;
+
+        const coverLetter = `
+${result.DIAMOND_HOOK}
+
+${result.DIAMOND_STORY}
+
+${result.DIAMOND_CLOSING}
+        `;
+
         setGenStatus('Criando pasta e PDFs no Google Drive...');
         const genResponse = await fetch('/api/generate-application', {
           method: 'POST',
@@ -125,10 +276,10 @@ export default function Dashboard() {
             name,
             company: selectedApp.company,
             role: selectedApp.role,
-            cvContent: result.tunedCV,
-            clContent: result.coverLetter,
-            outputFolderId: OUTPUT_FOLDER_ID,
-            processedFolderId: PROCESSED_FOLDER_ID,
+            cvContent: tunedCV,
+            clContent: coverLetter,
+            outputFolderId: outputFolderId,
+            processedFolderId: processedFolderId,
             originalFileId: selectedApp.driveFileId,
             accessToken: googleTokens?.access_token
           })
@@ -146,22 +297,65 @@ export default function Dashboard() {
         setGenStatus('Atualizando banco de dados...');
         await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
           driveFolderLink: genData.folderLink,
-          status: '✅ Pronto',
+          status: '✅ Aplicar',
           updatedAt: new Date().toISOString()
         });
 
-        setNotification({ message: 'Aplicação Nível 1 gerada com sucesso!', type: 'success' });
+        setNotification({ message: 'Aplicação Diamond gerada com sucesso!', type: 'success' });
         setGenStep('idle');
         setIsDetailOpen(false);
-      } else if (isLevel2) {
+      } else if (isGold) {
         setGenStep('finalizing');
-        setGenStatus('IA gerando documentos personalizados...');
+        setGenStatus('IA gerando documentos Gold...');
         // Scroll to status
         setTimeout(() => {
           genStatusRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 100);
-        const result = await generateLevel2(selectedApp.jobDescription, masterProfile, cvContent);
+        // Fetch CL template if exists
+        let clTemplate = '';
+        if (clGoldId) {
+          try {
+            const clResp = await fetch('/api/get-drive-file', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ 
+                fileId: clGoldId,
+                accessToken: googleTokens?.access_token,
+                refreshToken: googleTokens?.refresh_token
+              })
+            });
+            const clData = await clResp.json();
+            clTemplate = clData.content || '';
+          } catch (e) {
+            console.error('Error fetching CL template:', e);
+          }
+        }
+
+        const result = await generateGold(selectedApp.jobDescription, cvContent, clTemplate, userData?.geminiApiKey);
         
+        const tunedCV = `
+# Nhaiara Moura
+## ${result.TUNED_HEADLINE}
+
+${result.TUNED_SUMMARY}
+
+### Key Pillars
+- **${result.HEADLINER_PILLAR1}**: ${result.PILLAR_DESCRIPTION1}
+- **${result.HEADLINER_PILLAR2}**: ${result.PILLAR_DESCRIPTION2}
+- **${result.HEADLINER_PILLAR3}**: ${result.PILLAR_DESCRIPTION3}
+
+${cvContent}
+        `;
+
+        const coverLetter = `
+Prezados,
+
+${result.GOLD_REASON}
+
+Atenciosamente,
+Nhaiara Moura
+        `;
+
         setGenStatus('Criando pasta e PDFs no Google Drive...');
         const genResponse = await fetch('/api/generate-application', {
           method: 'POST',
@@ -170,10 +364,10 @@ export default function Dashboard() {
             name,
             company: selectedApp.company,
             role: selectedApp.role,
-            cvContent: result.tunedCV,
-            clContent: result.coverLetter,
-            outputFolderId: OUTPUT_FOLDER_ID,
-            processedFolderId: PROCESSED_FOLDER_ID,
+            cvContent: tunedCV,
+            clContent: coverLetter,
+            outputFolderId: outputFolderId,
+            processedFolderId: processedFolderId,
             originalFileId: selectedApp.driveFileId,
             accessToken: googleTokens?.access_token
           })
@@ -191,21 +385,21 @@ export default function Dashboard() {
         setGenStatus('Atualizando banco de dados...');
         await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
           driveFolderLink: genData.folderLink,
-          status: '✅ Pronto',
+          status: '✅ Aplicar',
           updatedAt: new Date().toISOString()
         });
 
-        setNotification({ message: 'Aplicação Nível 2 gerada com sucesso!', type: 'success' });
+        setNotification({ message: 'Aplicação Gold gerada com sucesso!', type: 'success' });
         setGenStep('idle');
         setIsDetailOpen(false);
       } else {
         setGenStep('finalizing');
-        setGenStatus('IA gerando Cover Letter rápida...');
+        setGenStatus('IA gerando aplicação Silver...');
         // Scroll to status
         setTimeout(() => {
           genStatusRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }, 100);
-        const result = await generateLevel3(selectedApp.jobDescription, cvContent);
+        const result = await generateSilver(selectedApp.jobDescription, cvContent, userData?.geminiApiKey);
         
         setGenStatus('Criando pasta e PDFs no Google Drive...');
         const genResponse = await fetch('/api/generate-application', {
@@ -215,10 +409,10 @@ export default function Dashboard() {
             name,
             company: selectedApp.company,
             role: selectedApp.role,
-            cvContent: result.tunedCV,
-            clContent: result.coverLetter,
-            outputFolderId: OUTPUT_FOLDER_ID,
-            processedFolderId: PROCESSED_FOLDER_ID,
+            cvContent: cvContent,
+            clContent: result.SHORT_COVER_LETTER_PLACE_HOLDER,
+            outputFolderId: outputFolderId,
+            processedFolderId: processedFolderId,
             originalFileId: selectedApp.driveFileId,
             accessToken: googleTokens?.access_token
           })
@@ -236,17 +430,24 @@ export default function Dashboard() {
         setGenStatus('Atualizando banco de dados...');
         await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
           driveFolderLink: genData.folderLink,
-          status: '✅ Pronto',
+          status: '✅ Aplicar',
           updatedAt: new Date().toISOString()
         });
 
-        setNotification({ message: 'Aplicação Nível 3 gerada com sucesso!', type: 'success' });
+        setNotification({ message: 'Aplicação Silver gerada com sucesso!', type: 'success' });
         setGenStep('idle');
         setIsDetailOpen(false);
       }
     } catch (error: any) {
       console.error('Error generating application:', error);
-      setNotification({ message: `Erro: ${error.message}`, type: 'error' });
+      const msg = error.message || '';
+      if (msg.includes('authentication') || msg.includes('credentials') || msg.includes('401') || msg.includes('403')) {
+        setGoogleTokens(null);
+        localStorage.removeItem('google_drive_tokens');
+        setNotification({ message: 'Sessão do Google Drive expirada. Por favor, conecte novamente.', type: 'error' });
+      } else {
+        setNotification({ message: `Erro: ${error.message}`, type: 'error' });
+      }
     } finally {
       setGenerating(false);
       setGenStatus('');
@@ -256,41 +457,38 @@ export default function Dashboard() {
   useEffect(() => {
     if (!user) return;
 
-    const q = query(
-      collection(db, `users/${user.uid}/applications`),
-      orderBy('updatedAt', 'desc'),
-      limit(5)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const apps = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setRecentApps(apps);
-    });
-
-    // Stats and Top Match listener
+    // Single listener for all applications to save quota
     const qAll = query(collection(db, `users/${user.uid}/applications`));
-    const unsubscribeAll = onSnapshot(qAll, (snapshot) => {
-      const all = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    
+    const unsubscribe = onSnapshot(qAll, (snapshot) => {
+      const all = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
+      
+      // Derive stats
       setStats({
         total: all.length,
-        ready: all.filter((a: any) => a.status === '✅ Pronto').length,
-        sent: all.filter((a: any) => a.status === 'Enviada').length,
-        manual: all.filter((a: any) => a.status === '💎 Manual').length,
+        ready: all.filter((a: any) => a.status === '✅ Aplicar').length,
+        sent: all.filter((a: any) => a.status === '📩 Triagem').length,
+        manual: all.filter((a: any) => a.matchScore === 'Diamond').length,
       });
 
-      // Find top match among non-completed
-      const pending = all.filter((a: any) => !['✅ Pronto', 'Enviada', '🗑️ Descartada', 'Rejeitada'].includes(a.status));
-      const sorted = pending.sort((a: any, b: any) => {
-        const scores: any = { 'Altíssima': 4, 'Alta': 3, 'Média': 2, 'Baixa': 1, 'Incompatível': 0 };
+      // Derive high priority apps (sorted by totalScore desc, limit 5)
+      const sortedByScoreDesc = [...all].sort((a, b) => 
+        (b.totalScore || 0) - (a.totalScore || 0)
+      );
+      setRecentApps(sortedByScoreDesc.slice(0, 5));
+
+      // Derive top match among non-completed
+      const pending = all.filter((a: any) => !['✅ Aplicar', '📩 Triagem', '🗑️ Descarte', '❌ Rejeitada', '🤝 Sucesso'].includes(a.status));
+      const sortedByScore = [...pending].sort((a: any, b: any) => {
+        const scores: any = { 'Diamond': 4, 'Gold': 3, 'Silver': 2, 'Discard': 0 };
         return (scores[b.matchScore] || 0) - (scores[a.matchScore] || 0);
       });
-      setTopMatch(sorted[0]);
+      setTopMatch(sortedByScore[0]);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/applications`);
     });
 
-    return () => {
-      unsubscribe();
-      unsubscribeAll();
-    };
+    return () => unsubscribe();
   }, [user]);
 
   useEffect(() => {
@@ -336,8 +534,11 @@ export default function Dashboard() {
       const userDoc = await getDoc(doc(db, 'users', user.uid));
       const userData = userDoc.data();
       const folderId = userData?.driveFolderId;
+      const outputFolderId = userData?.outputFolderId || OUTPUT_FOLDER_ID;
+      const processedFolderId = userData?.processedFolderId || PROCESSED_FOLDER_ID;
       const masterProfile = userData?.masterProfile || '';
       const customRules = userData?.customRules || '';
+      const geminiApiKey = userData?.geminiApiKey || '';
 
       if (!folderId) {
         setNotification({ message: 'Configure o Folder ID no seu Perfil primeiro.', type: 'error' });
@@ -351,44 +552,138 @@ export default function Dashboard() {
         body: JSON.stringify({ 
           folderId,
           accessToken: tokens?.access_token,
-          processedFolderId: PROCESSED_FOLDER_ID
+          refreshToken: tokens?.refresh_token
         })
       });
       
+      if (response.status === 401 || response.status === 403) {
+        setGoogleTokens(null);
+        localStorage.removeItem('google_drive_tokens');
+        throw new Error('Sessão do Google Drive expirada. Por favor, conecte novamente.');
+      }
+
       const data = await response.json();
-      if (data.error) throw new Error(data.error);
+      if (data.error) {
+        if (data.error.toLowerCase().includes('authentication') || data.error.toLowerCase().includes('credentials')) {
+          setGoogleTokens(null);
+          localStorage.removeItem('google_drive_tokens');
+          throw new Error('Sessão do Google Drive expirada. Por favor, conecte novamente.');
+        }
+        throw new Error(data.error);
+      }
       
       const files = data.files || [];
-      for (const file of files) {
-        const exists = recentApps.some(app => app.driveFileId === file.id);
-        if (exists) continue;
+      let processedCount = 0;
 
-        const analysis = await analyzeJob(file.content, masterProfile, customRules);
-        await addDoc(collection(db, `users/${user.uid}/applications`), {
-          company: analysis.company || 'Unknown',
-          role: analysis.role || file.name,
-          location: analysis.location || 'Remote',
-          link: '',
-          jobDescription: file.content,
-          matchScore: analysis.matchScore,
-          matchReasoning: analysis.matchReasoning,
-          gapAnalysis: analysis.gapAnalysis,
-          pilarAbreAlas: analysis.pilarAbreAlas,
-          keyStack: analysis.keyStack,
-          openingStrategy: analysis.openingStrategy,
-          suggestedStatus: analysis.suggestedStatus,
-          driveFileId: file.id,
-          driveFolderLink: '',
-          status: analysis.suggestedStatus || '🤖 Auto',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          uid: user.uid
-        });
+      // Get all existing apps to prevent duplicates properly
+      const allAppsQuery = query(collection(db, `users/${user.uid}/applications`));
+      const allAppsSnapshot = await getDocs(allAppsQuery);
+      const allApps = allAppsSnapshot.docs.map(doc => doc.data());
+      const existingFileIds = new Set(allApps.map(app => app.driveFileId).filter(Boolean));
+      const existingContents = new Set(allApps.map(app => app.jobDescription?.trim()).filter(Boolean));
+
+      for (const file of files) {
+        const fileContentTrimmed = file.content?.trim();
+        const existsById = existingFileIds.has(file.id);
+        const existsByContent = existingContents.has(fileContentTrimmed);
+
+        if (existsById || existsByContent) {
+          // Duplicate (ID or content), move file but don't add to DB
+          try {
+            await fetch('/api/move-file', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                fileId: file.id,
+                currentParents: file.parents,
+                targetFolderId: processedFolderId,
+                rootFolderId: folderId,
+                accessToken: tokens?.access_token,
+                refreshToken: tokens?.refresh_token
+              })
+            });
+          } catch (e) {
+            console.error('Error moving duplicate file:', e);
+          }
+          continue;
+        }
+
+        try {
+          const analysis = await analyzeJobMatch(file.content, masterProfile, geminiApiKey);
+          const status = analysis.tier === 'Diamond' ? '⏳ Input IA' : 
+                         analysis.tier === 'Discard' ? '🗑️ Descarte' : 
+                         '⚙️ Gerar Docs';
+
+          await addDoc(collection(db, `users/${user.uid}/applications`), {
+            company: analysis.company || 'Unknown',
+            role: analysis.role || file.name,
+            location: analysis.location || 'Remote',
+            link: '',
+            jobDescription: file.content,
+            matchScore: analysis.tier,
+            totalScore: analysis.totalScore,
+            matchReasoning: analysis.reason,
+            goldenPillar: analysis.goldenPillar,
+            diamondQuestions: analysis.diamondQuestions || [],
+            driveFileId: file.id,
+            driveFolderLink: '',
+            status: status,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            uid: user.uid
+          });
+
+          // Update local sets to prevent duplicates in the same batch
+          existingFileIds.add(file.id);
+          if (fileContentTrimmed) existingContents.add(fileContentTrimmed);
+
+          // Move file in Drive only after successful save
+          await fetch('/api/move-file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileId: file.id,
+              currentParents: file.parents,
+              targetFolderId: processedFolderId,
+              rootFolderId: folderId,
+              accessToken: tokens?.access_token,
+              refreshToken: tokens?.refresh_token
+            })
+          });
+
+          processedCount++;
+          // Small delay to respect rate limits (Gemini Free Tier is ~15 RPM)
+          // Using 6s (10 RPM) to be safe and allow for other concurrent requests
+          await new Promise(resolve => setTimeout(resolve, 6000));
+        } catch (fileError: any) {
+          console.error(`Error processing file ${file.name}:`, fileError);
+          const errorStr = JSON.stringify(fileError).toLowerCase();
+          const errorMsg = (fileError.message || '').toLowerCase();
+          
+          if (errorMsg.includes('429') || errorMsg.includes('resource_exhausted') || errorMsg.includes('quota') ||
+              errorStr.includes('429') || errorStr.includes('resource_exhausted') || errorStr.includes('quota')) {
+            setNotification({ 
+              message: 'Limite de cota do Gemini atingido. Algumas vagas serão processadas na próxima sincronização.', 
+              type: 'warning' 
+            });
+            break; // Stop processing further files to avoid more errors
+          }
+        }
       }
-      setNotification({ message: 'Drive sincronizado com sucesso!', type: 'success' });
+      setNotification({ 
+        message: processedCount > 0 ? `Drive sincronizado! ${processedCount} novas vagas adicionadas.` : 'Drive sincronizado! Nenhuma nova vaga encontrada.', 
+        type: 'success' 
+      });
     } catch (error: any) {
       console.error('Error syncing drive:', error);
-      setNotification({ message: `Erro ao sincronizar: ${error.message}`, type: 'error' });
+      const msg = error.message || '';
+      if (msg.includes('authentication') || msg.includes('credentials') || msg.includes('401') || msg.includes('403')) {
+        setGoogleTokens(null);
+        localStorage.removeItem('google_drive_tokens');
+        setNotification({ message: 'Sessão do Google Drive expirada. Por favor, conecte novamente.', type: 'error' });
+      } else {
+        setNotification({ message: `Erro ao sincronizar: ${error.message}`, type: 'error' });
+      }
     } finally {
       setSyncing(false);
     }
@@ -396,9 +691,9 @@ export default function Dashboard() {
 
   const statCards = [
     { name: 'Total de Vagas', value: stats.total, icon: TrendingUp, color: 'blue' },
-    { name: 'Prontas p/ Aplicar', value: stats.ready, icon: CheckCircle2, color: 'green' },
-    { name: 'Enviadas', value: stats.sent, icon: Clock, color: 'indigo' },
-    { name: 'Nível 1 (💎)', value: stats.manual, icon: AlertCircle, color: 'amber' },
+    { name: '✅ Aplicar', value: stats.ready, icon: CheckCircle2, color: 'green' },
+    { name: '📩 Triagem', value: stats.sent, icon: Clock, color: 'indigo' },
+    { name: 'Diamond (💎)', value: stats.manual, icon: AlertCircle, color: 'amber' },
   ];
 
   return (
@@ -407,27 +702,6 @@ export default function Dashboard() {
         <div>
           <h2 className="text-3xl font-bold text-slate-900">Dashboard</h2>
           <p className="text-slate-500 mt-1">Bem-vinda de volta ao seu centro de comando de carreira.</p>
-        </div>
-        <div className="flex gap-3">
-          <button
-            onClick={() => handleSyncDrive()}
-            disabled={syncing}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all border shadow-sm disabled:opacity-50 ${
-              googleTokens 
-                ? 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50' 
-                : 'bg-indigo-50 border-indigo-200 text-indigo-700 hover:bg-indigo-100'
-            }`}
-          >
-            <Zap size={18} className={syncing ? "animate-pulse text-amber-500" : (googleTokens ? "text-slate-400" : "text-indigo-500")} />
-            {syncing ? 'Sincronizando...' : (googleTokens ? 'Sincronizar Drive' : 'Conectar e Sincronizar')}
-          </button>
-          <Link 
-            to="/applications" 
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200"
-          >
-            <Plus size={18} />
-            Nova Vaga
-          </Link>
         </div>
       </header>
 
@@ -450,11 +724,41 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Recent Applications */}
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+      {/* AI Insight Banner */}
+      {topMatch && (
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="bg-gradient-to-r from-blue-600 to-indigo-700 rounded-2xl p-6 text-white shadow-xl shadow-blue-100 flex flex-col md:flex-row items-center justify-between gap-6"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-sm">
+              <Sparkles size={24} className="text-blue-100" />
+            </div>
+            <div>
+              <h3 className="font-bold text-lg">AI Insight</h3>
+              <p className="text-blue-100 text-sm">
+                Nhaiara, notei que você tem {stats.manual} vagas de nível 💎 pendentes. O match técnico com a <b>{topMatch.company}</b> é <b>{topMatch.matchScore}</b>.
+              </p>
+            </div>
+          </div>
+          <button 
+            onClick={() => {
+              setSelectedApp(topMatch);
+              setIsDetailOpen(true);
+            }}
+            className="px-6 py-2 bg-white text-blue-700 rounded-xl font-bold text-sm shadow-lg hover:bg-blue-50 transition-colors whitespace-nowrap"
+          >
+            Ver Detalhes da Vaga
+          </button>
+        </motion.div>
+      )}
+
+      <div className="grid grid-cols-1 gap-8">
+        {/* High Priority Applications */}
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
           <div className="p-6 border-b border-slate-50 flex justify-between items-center">
-            <h3 className="font-bold text-slate-900">Aplicações Recentes</h3>
+            <h3 className="font-bold text-slate-900">Aplicações de Alta Prioridade</h3>
             <Link to="/applications" className="text-sm text-blue-600 font-medium flex items-center gap-1 hover:underline">
               Ver todas <ArrowRight size={14} />
             </Link>
@@ -491,11 +795,15 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                      app.status.includes('💎') ? 'bg-amber-50 text-amber-700 border border-amber-100' :
-                      app.status.includes('✅') ? 'bg-green-50 text-green-700 border border-green-100' :
-                      'bg-blue-50 text-blue-700 border border-blue-100'
-                    }`}>
+                    <span className={cn(
+                      "px-3 py-1 rounded-full text-[10px] font-bold border",
+                      app.status === '⏳ Input IA' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                      app.status === '⚙️ Gerar Docs' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                      app.status === '✅ Aplicar' ? 'bg-green-50 text-green-700 border-green-200' :
+                      app.status === '📩 Triagem' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' :
+                      app.status === '🗑️ Descarte' ? 'bg-red-50 text-red-700 border-red-200' :
+                      'bg-slate-50 text-slate-600 border-slate-200'
+                    )}>
                       {app.status}
                     </span>
                     <span className="text-xs text-slate-400">
@@ -511,35 +819,39 @@ export default function Dashboard() {
             )}
           </div>
         </div>
-
-        {/* Quick Tips / AI Insight */}
-        <div className="bg-gradient-to-br from-blue-600 to-indigo-700 rounded-2xl p-8 text-white shadow-xl shadow-blue-200">
-          <h3 className="text-xl font-bold mb-4">AI Insight</h3>
-          {topMatch ? (
-            <>
-              <p className="text-blue-100 text-sm leading-relaxed mb-6">
-                "Nhaiara, notei que você tem {stats.manual} vagas de nível 💎 pendentes. O match técnico com a <b>{topMatch.company}</b> é <b>{topMatch.matchScore}</b>. Recomendo focar nela hoje para garantir o 'time to market'."
-              </p>
-              <div className="space-y-4">
-                <div className="bg-white/10 rounded-xl p-4 backdrop-blur-sm">
-                  <p className="text-xs text-blue-200 uppercase font-bold tracking-wider mb-1">Próximo Passo</p>
-                  <p className="text-sm font-medium">Revisar Cover Letter para {topMatch.company}</p>
-                </div>
-                <Link 
-                  to="/applications"
-                  className="block w-full py-3 bg-white text-blue-700 rounded-xl font-bold text-sm shadow-lg hover:bg-blue-50 transition-colors text-center"
-                >
-                  Ver Detalhes da Vaga
-                </Link>
-              </div>
-            </>
-          ) : (
-            <p className="text-blue-100 text-sm leading-relaxed">
-              "Nhaiara, adicione novas vagas ou sincronize seu Drive para que eu possa analisar os melhores matches para você."
-            </p>
-          )}
-        </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {appToDelete && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl"
+            >
+              <h3 className="text-lg font-bold text-slate-900 mb-2">Descartar Vaga?</h3>
+              <p className="text-slate-500 text-sm mb-6">
+                Esta ação moverá a vaga para o status de Descarte. Você poderá recuperá-la ou excluí-la permanentemente depois.
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setAppToDelete(null)}
+                  className="flex-1 px-4 py-2 bg-slate-100 text-slate-600 font-bold rounded-lg hover:bg-slate-200 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={() => deleteApp(appToDelete)}
+                  className="flex-1 px-4 py-2 bg-red-600 text-white font-bold rounded-lg hover:bg-red-700 transition-colors"
+                >
+                  Descartar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Detail Modal */}
       <AnimatePresence>
@@ -557,40 +869,37 @@ export default function Dashboard() {
                     <h3 className="text-2xl font-bold text-slate-900">{selectedApp.role}</h3>
                     <span className={cn(
                       "text-xs font-bold px-2 py-1 rounded-full border",
-                      selectedApp.matchScore === 'Altíssima' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
-                      selectedApp.matchScore === 'Alta' ? 'bg-blue-50 text-blue-700 border-blue-100' :
-                      'bg-slate-50 text-slate-700 border-slate-100'
+                      selectedApp.matchScore === 'Diamond' ? 'bg-amber-50 text-amber-700 border-amber-100' :
+                      selectedApp.matchScore === 'Gold' ? 'bg-blue-50 text-blue-700 border-blue-100' :
+                      selectedApp.matchScore === 'Silver' ? 'bg-slate-50 text-slate-700 border-slate-100' :
+                      'bg-red-50 text-red-700 border-red-100'
                     )}>
-                      {selectedApp.matchScore} Match
+                      {selectedApp.matchScore} Match ({selectedApp.totalScore}%)
                     </span>
                   </div>
                   <p className="text-slate-500 font-medium">{selectedApp.company} • {selectedApp.location}</p>
                 </div>
-                <button onClick={() => setIsDetailOpen(false)} className="text-slate-400 hover:text-slate-600 p-2">
+                <button onClick={() => setIsDetailOpen(false)} className="text-slate-400 hover:text-slate-600 p-2 transition-colors">
                   <XCircle size={24} />
                 </button>
               </div>
 
               <div className="flex-1 overflow-y-auto p-8 space-y-8">
                 {/* Intelligence Section */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="bg-emerald-50/50 p-5 rounded-xl border border-emerald-100">
-                    <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider mb-2">Pilar Abre-Alas (Forte)</p>
-                    <p className="text-sm font-semibold text-emerald-900">{selectedApp.pilarAbreAlas || 'Não analisado'}</p>
-                  </div>
-                  <div className="bg-red-50/50 p-5 rounded-xl border border-red-100">
-                    <p className="text-[10px] font-bold text-red-600 uppercase tracking-wider mb-2">Gap Principal (Fraco)</p>
-                    <p className="text-sm font-semibold text-red-900">{selectedApp.gapAnalysis || 'Não analisado'}</p>
+                    <p className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider mb-2">Pilar Golden</p>
+                    <p className="text-sm font-semibold text-emerald-900">{selectedApp.goldenPillar || 'Não analisado'}</p>
                   </div>
                   <div className="bg-blue-50/50 p-5 rounded-xl border border-blue-100">
-                    <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wider mb-2">Stack Chave</p>
-                    <p className="text-sm font-semibold text-blue-900">{selectedApp.keyStack || 'Não analisado'}</p>
+                    <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wider mb-2">Tier de Match</p>
+                    <p className="text-sm font-semibold text-blue-900">{selectedApp.matchScore} ({selectedApp.totalScore}%)</p>
                   </div>
                 </div>
 
                 {/* Strategy Section */}
                 <div className="space-y-4">
-                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Raciocínio do Match</h4>
+                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Critérios de Match</h4>
                   <div className="bg-slate-50 p-6 rounded-xl border border-slate-100 text-sm text-slate-700 leading-relaxed">
                     {selectedApp.matchReasoning || 'Sem detalhes adicionais.'}
                   </div>
@@ -611,6 +920,16 @@ export default function Dashboard() {
                   </div>
                 </div>
 
+                {/* Discard Reason Section */}
+                {selectedApp.status === '🗑️ Descartada' && selectedApp.discardReason && (
+                  <div className="space-y-4">
+                    <h4 className="text-sm font-bold text-red-600 uppercase tracking-wider">Motivo do Descarte</h4>
+                    <div className="bg-red-50 p-6 rounded-xl border border-red-100 text-sm text-red-900">
+                      {selectedApp.discardReason}
+                    </div>
+                  </div>
+                )}
+
                 {/* Automation Section */}
                 {generating && (
                   <div ref={genStatusRef} className="bg-blue-50 p-4 rounded-xl border border-blue-100 flex items-center gap-3 animate-pulse">
@@ -626,8 +945,8 @@ export default function Dashboard() {
                         <Sparkles size={20} />
                       </div>
                       <div>
-                        <h4 className="font-bold text-amber-900">Munição para Nível 1</h4>
-                        <p className="text-xs text-amber-700">Responda para uma personalização extrema</p>
+                        <h4 className="font-bold text-amber-900">Perguntas Diamond</h4>
+                        <p className="text-xs text-amber-700">Responda para capturar nuances específicas</p>
                       </div>
                     </div>
                     <div className="space-y-4">
@@ -661,7 +980,31 @@ export default function Dashboard() {
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Status Atual:</span>
-                        <span className="font-bold text-slate-900">{selectedApp.status}</span>
+                        <select 
+                          value={selectedApp.status}
+                          onChange={(e) => updateStatus(selectedApp.id, e.target.value)}
+                          className={cn(
+                            "text-[10px] font-bold px-2 py-1 rounded-full border outline-none cursor-pointer appearance-none text-center min-w-[120px]",
+                            selectedApp.status === '⏳ Input IA' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                            selectedApp.status === '⚙️ Gerar Docs' ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                            selectedApp.status === '✅ Aplicar' ? 'bg-green-50 text-green-700 border-green-200' :
+                            selectedApp.status === '📩 Triagem' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' :
+                            selectedApp.status === '🗑️ Descarte' ? 'bg-red-50 text-red-700 border-red-200' :
+                            'bg-slate-50 text-slate-600 border-slate-200'
+                          )}
+                        >
+                          <option value="📥 Nova">📥 Nova</option>
+                          <option value="⏳ Input IA">⏳ Input IA</option>
+                          <option value="⚙️ Gerar Docs">⚙️ Gerar Docs</option>
+                          <option value="✅ Aplicar">✅ Aplicar</option>
+                          <option value="📩 Triagem">📩 Triagem</option>
+                          <option value="🕰️ Feedback">🕰️ Feedback</option>
+                          <option value="🗣️ Entrevistas">🗣️ Entrevistas</option>
+                          <option value="🏆 Proposta">🏆 Proposta</option>
+                          <option value="🤝 Sucesso">🤝 Sucesso</option>
+                          <option value="❌ Rejeitada">❌ Rejeitada</option>
+                          <option value="🗑️ Descarte">🗑️ Descarte</option>
+                        </select>
                       </div>
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Link Pasta Drive:</span>
@@ -716,50 +1059,71 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
-                <button 
-                  onClick={() => {
-                    setIsDetailOpen(false);
-                    setGenStep('idle');
-                    setAnswers({});
-                  }}
-                  className="px-6 py-2 bg-white border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition-colors"
-                >
-                  Fechar
-                </button>
-
-                {genStep === 'idle' && (
+              <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-between items-center">
+                <div className="flex gap-3">
                   <button 
-                    onClick={handleGenerateApplication}
-                    disabled={generating}
-                    className={cn(
-                      "px-6 py-2 text-white font-bold rounded-lg transition-all shadow-lg flex items-center gap-2",
-                      selectedApp.matchScore === 'Altíssima' ? 'bg-amber-600 hover:bg-amber-700 shadow-amber-200' :
-                      selectedApp.matchScore === 'Alta' || selectedApp.matchScore === 'Média' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' :
-                      'bg-slate-600 hover:bg-slate-700 shadow-slate-200'
-                    )}
+                    onClick={() => {
+                      setAppToDelete(selectedApp.id);
+                      setIsDetailOpen(false);
+                    }}
+                    className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                    title="Excluir Vaga"
                   >
-                    {generating ? (
-                      <Loader2 className="animate-spin" size={18} />
-                    ) : (
-                      <Cpu size={18} />
-                    )}
-                    {selectedApp.matchScore === 'Altíssima' ? '💎 Iniciar Nível 1' : 
-                     selectedApp.matchScore === 'Alta' || selectedApp.matchScore === 'Média' ? '⚡ Gerar Nível 2' : 
-                     '♻️ Gerar Nível 3'}
+                    <Trash2 size={20} />
                   </button>
-                )}
-
-                {selectedApp.link && (
-                  <a 
-                    href={selectedApp.link}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="px-6 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200 flex items-center gap-2"
+                  <button 
+                    onClick={() => handleReanalyzeApp(selectedApp)}
+                    disabled={syncing}
+                    className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-20"
+                    title="Revisar Match"
                   >
-                    <ExternalLink size={16} /> Apply Now
-                  </a>
-                )}
+                    <Sparkles size={20} className={syncing ? "animate-spin" : ""} />
+                  </button>
+                </div>
+
+                <div className="flex gap-3">
+                  {selectedApp.status === '🗑️ Descarte' ? (
+                    <button 
+                      onClick={() => setIsDetailOpen(false)}
+                      className="px-8 py-2 bg-slate-900 text-white font-bold rounded-lg hover:bg-slate-800 transition-all shadow-lg shadow-slate-200"
+                    >
+                      Salvar e Fechar
+                    </button>
+                  ) : (
+                    <>
+                      {genStep === 'idle' && (
+                        <button 
+                          onClick={handleGenerateApplication}
+                          disabled={generating}
+                          className={cn(
+                            "px-8 py-2 text-white font-bold rounded-lg transition-all shadow-lg flex items-center gap-2",
+                            selectedApp.matchScore === 'Diamond' ? 'bg-amber-600 hover:bg-amber-700 shadow-amber-200' :
+                            selectedApp.matchScore === 'Gold' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' :
+                            'bg-slate-600 hover:bg-slate-700 shadow-slate-200'
+                          )}
+                        >
+                          {generating ? (
+                            <Loader2 className="animate-spin" size={18} />
+                          ) : (
+                            <FileText size={18} />
+                          )}
+                          Gerar Docs
+                        </button>
+                      )}
+
+                      {selectedApp.link && (
+                        <a 
+                          href={selectedApp.link}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-6 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-colors shadow-lg shadow-blue-200 flex items-center gap-2"
+                        >
+                          <ExternalLink size={16} /> Apply Now
+                        </a>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </motion.div>
           </div>
