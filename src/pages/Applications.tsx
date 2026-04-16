@@ -96,6 +96,13 @@ export default function Applications() {
   };
 
   useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
+
+  useEffect(() => {
     if (!user) return;
 
     const q = query(
@@ -301,7 +308,7 @@ export default function Applications() {
               errorStr.includes('429') || errorStr.includes('resource_exhausted') || errorStr.includes('quota')) {
             setNotification({ 
               message: 'Limite de cota do Gemini atingido. Algumas vagas serão processadas na próxima sincronização.', 
-              type: 'warning' 
+              type: 'error' 
             });
             break; // Stop processing further files to avoid more errors
           }
@@ -326,296 +333,152 @@ export default function Applications() {
     }
   };
 
-  const handleGenerateApplication = async () => {
-    if (!selectedApp || !user) return;
-    setGenerating(true);
-    setGenStatus('Iniciando processo...');
-    setNotification(null);
+  const handleGenerateApplication = async (appOverride?: any) => {
+    const app = appOverride || selectedApp;
+    if (!user || !app) return;
+    
+    // If we're performing single generation (not batch override), we set global states
+    if (!appOverride) {
+      setGenerating(true);
+      setGenStatus('Iniciando geração...');
+      setGenStep('finalizing');
+    }
 
     try {
       const userDoc = await getDoc(doc(db, 'users', user.uid));
       const userData = userDoc.data();
-      const masterProfile = userData?.masterProfile || '';
-      const name = userData?.name || 'Nhaiara Moura';
-
-      const match = selectedApp.matchScore;
-      const isDiamond = match === 'Diamond';
-      const isGold = match === 'Gold';
-      const isSilver = match === 'Silver';
-
-      // Fetch CV content
-      setGenStatus('Buscando currículo base no Drive...');
+      const name = userData?.name || user.displayName || 'Nhaiara Moura';
       
-      // Use template IDs from profile or fallback to constants
-      const cvDiamondId = extractFileId(userData?.cvDiamondFileId || CV_LEVEL_1_2_ID);
-      const cvGoldId = extractFileId(userData?.cvGoldFileId || CV_LEVEL_1_2_ID);
-      const cvSilverId = extractFileId(userData?.cvSilverFileId || CV_LEVEL_3_ID);
+      const cvDiamondId = extractFileId(userData?.cvDiamondFileId);
+      const cvGoldId = extractFileId(userData?.cvGoldFileId);
+      const cvSilverId = extractFileId(userData?.cvSilverFileId);
       const outputFolderId = extractFileId(userData?.outputFolderId || OUTPUT_FOLDER_ID);
       const processedFolderId = extractFileId(userData?.processedFolderId || PROCESSED_FOLDER_ID);
       
       const clDiamondId = extractFileId(userData?.clDiamondFileId);
       const clGoldId = extractFileId(userData?.clGoldFileId);
       
-      let cvId = cvSilverId;
-      if (isDiamond) cvId = cvDiamondId;
-      else if (isGold) cvId = cvGoldId;
+      const isDiamond = app.matchScore === 'Diamond';
+      const isGold = app.matchScore === 'Gold';
 
-      const cvResponse = await fetch('/api/get-drive-file', {
+      // Common Tags
+      const commonTags = {
+        DATE: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
+        JOB_TITLE: app.role || 'Engineering Manager',
+        COMPANY_NAME: app.company || 'Empresa',
+        HIRING_MANAGER: app.hiringManager || 'Hiring Team'
+      };
+
+      let cvTemplateId = cvSilverId;
+      let clTemplateId = null;
+      let tags = { ...commonTags };
+
+      const geminiApiKey = userData?.geminiApiKey || '';
+      const geminiModel = userData?.geminiModel || 'gemini-2.5-flash';
+      const masterProfile = userData?.masterProfile || '';
+
+      if (isDiamond) {
+        if (!appOverride) setGenStatus('IA gerando dados Diamond...');
+        cvTemplateId = cvDiamondId;
+        clTemplateId = clDiamondId;
+        
+        const currentAnswers = app.diamondAnswers || {};
+        const answersStr = Object.entries(currentAnswers).map(([q, a]) => `Q: ${q}\nA: ${a}`).join('\n\n');
+        
+        const result = await generateDiamond(app.jobDescription, masterProfile, answersStr, '', geminiApiKey, geminiModel);
+        tags = { ...tags, ...result };
+      } else if (isGold) {
+        if (!appOverride) setGenStatus('IA gerando dados Gold...');
+        cvTemplateId = cvGoldId;
+        clTemplateId = clGoldId;
+        
+        const result = await generateGold(app.jobDescription, masterProfile, app.company || 'Empresa', '', geminiApiKey, geminiModel);
+        tags = { ...tags, ...result };
+      } else {
+        if (!appOverride) setGenStatus('IA gerando dados Silver...');
+        cvTemplateId = cvSilverId;
+        const result = await generateSilver(app.jobDescription, masterProfile, geminiApiKey, geminiModel);
+        tags = { ...tags, ...result };
+      }
+
+      if (!appOverride) setGenStatus('Criando pasta e documentos no Google Drive...');
+      const genResponse = await fetch('/api/generate-application', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          fileId: cvId,
+        body: JSON.stringify({
+          name,
+          company: app.company,
+          role: app.role,
+          cvTemplateId,
+          clTemplateId,
+          tags,
+          outputFolderId,
+          processedFolderId,
+          originalFileId: app.driveFileId,
           accessToken: googleTokens?.access_token,
           refreshToken: googleTokens?.refresh_token
         })
       });
-      const cvData = await cvResponse.json();
-      const cvContent = cvData.content;
+      
+      const genData = await genResponse.json();
+      if (genData.error) throw new Error(genData.error);
 
-      if (isDiamond) {
-        setGenStatus('IA gerando documentos finais Diamond...');
-        
-        const currentAnswers = selectedApp.diamondAnswers || {};
-        const answersStr = Object.entries(currentAnswers).map(([q, a]) => `Q: ${q}\nA: ${a}`).join('\n\n');
-        
-        // Fetch CL template if exists
-        let clTemplate = '';
-        if (clDiamondId) {
-          try {
-            const clResp = await fetch('/api/get-drive-file', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                fileId: clDiamondId,
-                accessToken: googleTokens?.access_token,
-                refreshToken: googleTokens?.refresh_token
-              })
-            });
-            const clData = await clResp.json();
-            clTemplate = clData.content || '';
-          } catch (e) {
-            console.error('Error fetching CL template:', e);
-          }
-        }
+      if (!appOverride) setGenStatus('Atualizando banco de dados...');
+      await updateDoc(doc(db, `users/${user.uid}/applications`, app.id), {
+        driveFolderLink: genData.folderLink,
+        status: '✅ Aplicar',
+        updatedAt: new Date().toISOString()
+      });
 
-        const geminiModel = userData?.geminiModel || 'gemini-2.5-flash';
-        const result = await generateDiamond(selectedApp.jobDescription, cvContent, answersStr, clTemplate, userData?.geminiApiKey, geminiModel);
-        
-        // Format Diamond result to Markdown for the API
-        const tunedCV = `
-# Nhaiara Moura
-## ${result.CUSTOM_HEADLINE}
-
-${result.SUMMARY}
-
-### Core Competencies
-- **${result.SKILL_NAME1}**: ${result.SKILL_DESCRIPTION1}
-- **${result.SKILL_NAME2}**: ${result.SKILL_DESCRIPTION2}
-- **${result.SKILL_NAME3}**: ${result.SKILL_DESCRIPTION3}
-- **${result.SKILL_NAME4}**: ${result.SKILL_DESCRIPTION4}
-
-### Professional Experience
-
-#### Taxfix
-${result.EXP_TAXFIX}
-
-#### Mimi Hearing Technologies
-${result.EXP_MIMI}
-
-#### Tech Lead / Senior Engineer
-${result.EXP_TECHLEAD}
-
-#### SDET / QA Engineer
-${result.EXP_SDET}
-        `;
-
-        const coverLetter = `
-${result.DIAMOND_HOOK}
-
-${result.DIAMOND_STORY}
-
-${result.DIAMOND_CLOSING}
-        `;
-
-        setGenStatus('Criando pasta e PDFs no Google Drive...');
-        const genResponse = await fetch('/api/generate-application', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            company: selectedApp.company,
-            role: selectedApp.role,
-            cvContent: tunedCV,
-            clContent: coverLetter,
-            outputFolderId: outputFolderId,
-            processedFolderId: processedFolderId,
-            originalFileId: selectedApp.driveFileId,
-            accessToken: googleTokens?.access_token
-          })
-        });
-        const genData = await genResponse.json();
-        
-        if (genData.error) {
-          throw new Error(genData.error);
-        }
-
-        if (!genData.folderLink) {
-          throw new Error('Drive folder link was not generated.');
-        }
-        
-        setGenStatus('Atualizando banco de dados...');
-        await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
-          driveFolderLink: genData.folderLink,
-          status: '✅ Aplicar',
-          updatedAt: new Date().toISOString()
-        });
-
-        setNotification({ message: 'Aplicação Diamond gerada com sucesso!', type: 'success' });
-        setGenStep('idle');
-        setIsDetailOpen(false);
-      } else if (isGold) {
-        setGenStep('finalizing');
-        setGenStatus('IA gerando documentos Gold...');
-        // Scroll to status
-        setTimeout(() => {
-          genStatusRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, 100);
-        // Fetch CL template if exists
-        let clTemplate = '';
-        if (clGoldId) {
-          try {
-            const clResp = await fetch('/api/get-drive-file', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ 
-                fileId: clGoldId,
-                accessToken: googleTokens?.access_token,
-                refreshToken: googleTokens?.refresh_token
-              })
-            });
-            const clData = await clResp.json();
-            clTemplate = clData.content || '';
-          } catch (e) {
-            console.error('Error fetching CL template:', e);
-          }
-        }
-
-        const geminiModel = userData?.geminiModel || 'gemini-2.5-flash';
-        const result = await generateGold(selectedApp.jobDescription, cvContent, clTemplate, userData?.geminiApiKey, geminiModel);
-        
-        const tunedCV = `
-# Nhaiara Moura
-## ${result.TUNED_HEADLINE}
-
-${result.TUNED_SUMMARY}
-
-### Key Pillars
-- **${result.HEADLINER_PILLAR1}**: ${result.PILLAR_DESCRIPTION1}
-- **${result.HEADLINER_PILLAR2}**: ${result.PILLAR_DESCRIPTION2}
-- **${result.HEADLINER_PILLAR3}**: ${result.PILLAR_DESCRIPTION3}
-
-${cvContent}
-        `;
-
-        const coverLetter = `
-Prezados,
-
-${result.GOLD_REASON}
-
-Atenciosamente,
-Nhaiara Moura
-        `;
-
-        setGenStatus('Criando pasta e PDFs no Google Drive...');
-        const genResponse = await fetch('/api/generate-application', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            company: selectedApp.company,
-            role: selectedApp.role,
-            cvContent: tunedCV,
-            clContent: coverLetter,
-            outputFolderId: outputFolderId,
-            processedFolderId: processedFolderId,
-            originalFileId: selectedApp.driveFileId,
-            accessToken: googleTokens?.access_token
-          })
-        });
-        const genData = await genResponse.json();
-        
-        if (genData.error) {
-          throw new Error(genData.error);
-        }
-
-        if (!genData.folderLink) {
-          throw new Error('Drive folder link was not generated.');
-        }
-        
-        setGenStatus('Atualizando banco de dados...');
-        await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
-          driveFolderLink: genData.folderLink,
-          status: '✅ Aplicar',
-          updatedAt: new Date().toISOString()
-        });
-
-        setNotification({ message: 'Aplicação Gold gerada com sucesso!', type: 'success' });
-        setGenStep('idle');
-        setIsDetailOpen(false);
-      } else {
-        setGenStep('finalizing');
-        setGenStatus('IA gerando aplicação Silver...');
-        // Scroll to status
-        setTimeout(() => {
-          genStatusRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }, 100);
-        const geminiModel = userData?.geminiModel || 'gemini-2.5-flash';
-      const result = await generateSilver(selectedApp.jobDescription, cvContent, userData?.geminiApiKey, geminiModel);
-        
-        setGenStatus('Criando pasta e PDFs no Google Drive...');
-        const genResponse = await fetch('/api/generate-application', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            company: selectedApp.company,
-            role: selectedApp.role,
-            cvContent: cvContent,
-            clContent: result.SHORT_COVER_LETTER_PLACE_HOLDER,
-            outputFolderId: outputFolderId,
-            processedFolderId: processedFolderId,
-            originalFileId: selectedApp.driveFileId,
-            accessToken: googleTokens?.access_token
-          })
-        });
-        const genData = await genResponse.json();
-        
-        if (genData.error) {
-          throw new Error(genData.error);
-        }
-
-        if (!genData.folderLink) {
-          throw new Error('Drive folder link was not generated.');
-        }
-        
-        setGenStatus('Atualizando banco de dados...');
-        await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
-          driveFolderLink: genData.folderLink,
-          status: '✅ Aplicar',
-          updatedAt: new Date().toISOString()
-        });
-
-        setNotification({ message: 'Aplicação Silver gerada com sucesso!', type: 'success' });
+      if (!appOverride) {
+        setNotification({ message: `Aplicação ${app.matchScore} gerada com sucesso!`, type: 'success' });
         setGenStep('idle');
         setIsDetailOpen(false);
       }
+      return true;
     } catch (error: any) {
       console.error('Error generating application:', error);
-      setNotification({ message: `Erro: ${error.message}`, type: 'error' });
+      if (!appOverride) setNotification({ message: `Erro: ${error.message}`, type: 'error' });
+      return false;
     } finally {
-      setGenerating(false);
-      setGenStatus('');
+      if (!appOverride) {
+        setGenerating(false);
+        setGenStatus('');
+      }
     }
+  };
+
+  const handleBatchGenerate = async () => {
+    if (!user) return;
+    
+    // Find top 5 Gold/Silver apps that need generation
+    const candidates = apps
+      .filter(app => (app.matchScore === 'Gold' || app.matchScore === 'Silver') && app.status === '⚙️ Gerar Docs')
+      .sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0))
+      .slice(0, 5);
+
+    if (candidates.length === 0) {
+      setNotification({ message: 'Nenhuma vaga Gold ou Silver pendente de documentos encontrada.', type: 'error' });
+      return;
+    }
+
+    setGenerating(true);
+    setNotification(null);
+    let successCount = 0;
+
+    for (let i = 0; i < candidates.length; i++) {
+      const app = candidates[i];
+      setGenStatus(`Processando ${i + 1}/${candidates.length}: ${app.company}...`);
+      const success = await handleGenerateApplication(app);
+      if (success) successCount++;
+    }
+
+    setGenerating(false);
+    setGenStatus('');
+    setNotification({ 
+      message: `${successCount} de ${candidates.length} aplicações processadas com sucesso!`, 
+      type: successCount === candidates.length ? 'success' : 'error' 
+    });
   };
   const handleScrapeLink = async () => {
     if (!newApp.link) {
@@ -676,6 +539,7 @@ Nhaiara Moura
         company: analysis.company || newApp.company,
         role: analysis.role || newApp.role,
         location: analysis.location || newApp.location,
+        hiringManager: analysis.hiringManager || 'Hiring Team',
         matchScore: analysis.tier,
         totalScore: analysis.totalScore,
         matchReasoning: analysis.reason,
@@ -789,6 +653,7 @@ Nhaiara Moura
         company: analysis.company || app.company,
         role: analysis.role || app.role,
         location: analysis.location || app.location,
+        hiringManager: analysis.hiringManager || 'Hiring Team',
         matchScore: analysis.tier,
         totalScore: analysis.totalScore,
         matchReasoning: analysis.reason,
@@ -831,6 +696,14 @@ Nhaiara Moura
           <p className="text-slate-500 mt-1">Gerencie seu pipeline de vagas e acompanhe o progresso.</p>
         </div>
         <div className="flex gap-3">
+          <button
+            onClick={handleBatchGenerate}
+            disabled={generating}
+            className="flex items-center gap-2 px-6 py-2 bg-amber-500 text-white rounded-lg font-medium hover:bg-amber-600 transition-colors shadow-lg shadow-amber-200 disabled:opacity-50"
+          >
+            {generating ? <Loader2 size={18} className="animate-spin" /> : <Sparkles size={18} />}
+            Processar Top 5 (Gold/Silver)
+          </button>
           <button
             onClick={() => handleSyncDrive()}
             disabled={syncing}
@@ -1156,7 +1029,13 @@ Nhaiara Moura
             )}
           >
             {notification.type === 'success' ? <CheckCircle2 size={18} /> : <XCircle size={18} />}
-            {notification.message}
+            <span className="flex-1">{notification.message}</span>
+            <button 
+              onClick={() => setNotification(null)}
+              className="p-1 hover:bg-white/20 rounded-lg transition-colors"
+            >
+              <X size={14} />
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -1490,9 +1369,20 @@ Nhaiara Moura
                     </button>
                   ) : (
                     <>
-                      {genStep === 'idle' && (
+                      {selectedApp.status === '✅ Aplicar' ? (
                         <button 
-                          onClick={handleGenerateApplication}
+                          onClick={() => {
+                            updateStatus(selectedApp.id, '🚀 Aplicada');
+                            setIsDetailOpen(false);
+                          }}
+                          className="px-8 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 flex items-center gap-2"
+                        >
+                          <Send size={18} />
+                          Marcar como Aplicada
+                        </button>
+                      ) : genStep === 'idle' && (
+                        <button 
+                          onClick={() => handleGenerateApplication()}
                           disabled={generating}
                           className={cn(
                             "px-8 py-2 text-white font-bold rounded-lg transition-all shadow-lg flex items-center gap-2",

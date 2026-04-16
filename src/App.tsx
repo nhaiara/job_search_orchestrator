@@ -7,6 +7,8 @@ import Dashboard from './pages/Dashboard';
 import Applications from './pages/Applications';
 import AppSettings from './pages/AppSettings';
 
+import ErrorBoundary from './components/ErrorBoundary';
+
 function PrivateRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   
@@ -43,8 +45,10 @@ function AppContent() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }

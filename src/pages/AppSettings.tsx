@@ -4,7 +4,7 @@ import { doc, getDoc, setDoc, serverTimestamp, collection, query, getDocs, delet
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
 import { motion } from 'motion/react';
-import { Save, UserCircle, FileText, Code, Zap, Plus, AlertCircle, RefreshCw, Sparkles } from 'lucide-react';
+import { Save, UserCircle, FileText, Code, Zap, Plus, AlertCircle, RefreshCw, Sparkles, X } from 'lucide-react';
 import { AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { extractFileId } from '../lib/driveUtils';
@@ -778,7 +778,13 @@ export default function AppSettings() {
             )}
           >
             {notification.type === 'success' ? <Zap size={18} /> : <AlertCircle size={18} />}
-            {notification.message}
+            <span className="flex-1">{notification.message}</span>
+            <button 
+              onClick={() => setNotification(null)}
+              className="p-1 hover:bg-white/20 rounded-lg transition-colors"
+            >
+              <X size={14} />
+            </button>
           </motion.div>
         )}
       </AnimatePresence>

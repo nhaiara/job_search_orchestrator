@@ -41,11 +41,23 @@ async function startServer() {
     return google.drive({ version: 'v3', auth });
   };
 
+  const getDocsInstance = (accessToken?: string, refreshToken?: string) => {
+    if (!accessToken) {
+      throw new Error('Google Docs access token is required. Please connect your Drive.');
+    }
+    const auth = new google.auth.OAuth2(clientId, clientSecret);
+    auth.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
+    return google.docs({ version: 'v1', auth });
+  };
+
   // OAuth Routes
   app.get('/api/auth/google/url', (req, res) => {
     const url = oauth2Client.generateAuthUrl({
       access_type: 'offline',
-      scope: ['https://www.googleapis.com/auth/drive'],
+      scope: [
+        'https://www.googleapis.com/auth/drive',
+        'https://www.googleapis.com/auth/documents'
+      ],
       prompt: 'consent'
     });
     res.json({ url });
@@ -271,11 +283,18 @@ async function startServer() {
 
   app.post('/api/generate-application', async (req, res) => {
     try {
-      const { name, company, role, cvContent, clContent, outputFolderId, processedFolderId, originalFileId, accessToken, refreshToken } = req.body;
+      const { 
+        name, company, role, 
+        cvTemplateId, clTemplateId, 
+        tags,
+        outputFolderId, processedFolderId, originalFileId, 
+        accessToken, refreshToken 
+      } = req.body;
       
       if (!outputFolderId) return res.status(400).json({ error: 'Output Folder ID is required' });
 
       const driveClient = getDriveInstance(accessToken, refreshToken);
+      const docsClient = getDocsInstance(accessToken, refreshToken);
 
       // 1. Create Folder: "Data - Empresa - Cargo"
       const date = new Date().toISOString().split('T')[0];
@@ -293,68 +312,70 @@ async function startServer() {
       const folderId = folderResponse.data.id!;
       const folderLink = folderResponse.data.webViewLink!;
 
-      // Helper to create PDF via Google Docs Export
-      const createPdf = async (fileName: string, markdown: string) => {
-        const html = md.render(markdown);
-        
-        // 1. Create a temporary Google Doc from HTML
-        const tempDocResponse = await driveClient.files.create({
+      // Helper to generate doc from template
+      const generateFromTemplate = async (templateId: string, fileName: string) => {
+        if (!templateId) return null;
+
+        // 1. Copy template
+        const copyResponse = await driveClient.files.copy({
+          fileId: templateId,
           requestBody: {
-            name: `TEMP_${fileName}`,
-            mimeType: 'application/vnd.google-apps.document',
-            parents: [folderId] // Put it in the same folder temporarily
+            name: fileName,
+            parents: [folderId]
+          }
+        });
+        const newDocId = copyResponse.data.id!;
+
+        // 2. Prepare batch update requests for tags
+        const requests = Object.entries(tags).map(([key, value]) => ({
+          replaceAllText: {
+            containsText: {
+              text: `{{${key}}}`,
+              matchCase: true
+            },
+            replaceText: String(value || '')
+          }
+        }));
+
+        // 3. Apply replacements
+        if (requests.length > 0) {
+          await docsClient.documents.batchUpdate({
+            documentId: newDocId,
+            requestBody: { requests }
+          });
+        }
+
+        // 4. Export to PDF
+        const exportResponse = await driveClient.files.export({
+          fileId: newDocId,
+          mimeType: 'application/pdf'
+        }, { responseType: 'arraybuffer' });
+
+        const pdfBuffer = Buffer.from(exportResponse.data as ArrayBuffer);
+
+        // 5. Save PDF
+        await driveClient.files.create({
+          requestBody: {
+            name: `${fileName}.pdf`,
+            parents: [folderId],
+            mimeType: 'application/pdf'
           },
           media: {
-            mimeType: 'text/html',
-            body: `
-              <html>
-                <head>
-                  <style>
-                    body { font-family: 'Arial', sans-serif; line-height: 1.5; font-size: 11pt; }
-                    h1 { font-size: 24pt; margin-bottom: 10px; }
-                    h2 { font-size: 18pt; margin-top: 20px; margin-bottom: 10px; }
-                    p { margin-bottom: 10px; }
-                  </style>
-                </head>
-                <body>${html}</body>
-              </html>
-            `
+            mimeType: 'application/pdf',
+            body: Readable.from(pdfBuffer)
           }
         });
 
-        const tempDocId = tempDocResponse.data.id!;
-
-        try {
-          // 2. Export the Google Doc as PDF
-          const exportResponse = await driveClient.files.export({
-            fileId: tempDocId,
-            mimeType: 'application/pdf'
-          }, { responseType: 'arraybuffer' });
-
-          const pdfBuffer = Buffer.from(exportResponse.data as ArrayBuffer);
-
-          // 3. Upload the PDF to the target folder
-          await driveClient.files.create({
-            requestBody: {
-              name: fileName,
-              parents: [folderId],
-              mimeType: 'application/pdf'
-            },
-            media: {
-              mimeType: 'application/pdf',
-              body: Readable.from(pdfBuffer)
-            }
-          });
-        } catch (error) {
-          console.error('Error in createPdf:', error);
-          throw error;
-        }
-        // Removed the finally block that deleted tempDocId to keep the Google Doc
+        return newDocId;
       };
 
-      // 2. Generate CV and CL PDFs
-      await createPdf(`CV - ${name}.pdf`, cvContent);
-      await createPdf(`Cover Letter - ${name}.pdf`, clContent);
+      // 2. Generate CV and CL
+      if (cvTemplateId) {
+        await generateFromTemplate(cvTemplateId, `CV - ${name}`);
+      }
+      if (clTemplateId) {
+        await generateFromTemplate(clTemplateId, `Cover Letter - ${name}`);
+      }
 
       // 3. Move original file to processed if originalFileId exists
       if (originalFileId) {

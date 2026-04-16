@@ -63,6 +63,9 @@ export async function analyzeJobMatch(jobDescription: string, cvContent: string,
     ${jobDescription}
 
     REGRAS DE ANÁLISE:
+    Regra 0: Sanitização do Título (MANDATÓRIO)
+    Extraia apenas o nome principal do cargo em {{JOB_TITLE}}. Remova explicitamente sufixos como "(all genders)", "(m/f/d)", "(f/m/d)", ou qualquer tag de gênero/neutra. Retorne no campo "role".
+
     Regra 1: Vetos (Hard Filters) - 0% Match (Classifique como "Discard")
     Veto aplicável se:
     - Exigir idioma Alemão fluente ou JD escrita em Alemão.
@@ -100,6 +103,7 @@ export async function analyzeJobMatch(jobDescription: string, cvContent: string,
       "company": "Nome da empresa",
       "role": "Título do cargo",
       "location": "Localização",
+      "hiringManager": "Nome do Hiring Manager ou Recrutador (se mencionado, senão 'Hiring Team')",
       "diamondQuestions": ["Pergunta 1?", "Pergunta 2?"] // Retorne array vazio [] se não for Diamond
     }
   `;
@@ -118,27 +122,39 @@ export async function generateDiamond(jobDescription: string, cvContent: string,
   const ai = getAI(apiKey);
   const model = modelName || "gemini-2.5-flash";
   const prompt = `
-    Atue como meu Estrategista de Carreira Executiva. Aplicação NÍVEL DIAMOND.
+    Atue como meu Estrategista de Carreira Executiva. Aplicação NÍVEL DIAMOND (Storytelling de Alto Impacto).
     ⚠️ NUNCA alucine fatos. Use APENAS o Master Profile V17.
     
+    IDIOMA: English (US/UK professional).
+    TOM: Professional, authoritative, and data-driven.
+    TERMINOLOGIA: Use modern IT industry standards (e.g., SDLC, Scalability, Stakeholder Management, Agile).
+    DATA: European standard (e.g., 16 April 2026).
+
     CV MASTER (V17):
     ${cvContent}
     
     JOB DESCRIPTION:
     ${jobDescription}
 
-    RESPOSTAS DA CANDIDATA ÀS PERGUNTAS DE ALINHAMENTO:
+    RESPOSTAS DA CANDIDATA ÀS PERGUNTAS DE ALINHAMENTO (USE PARA CUSTOMIZAR TODO O CONTEÚDO):
     ${userAnswers}
     
-    ${clTemplate ? `MODELO DE COVER LETTER BASE (Use como guia de tom e estrutura, mas adapte totalmente aos fatos e respostas):\n${clTemplate}` : ''}
+    ${clTemplate ? `MODELO DE COVER LETTER BASE (Use como guia de estrutura):\n${clTemplate}` : ''}
     
     Tarefa:
     Gere os textos exatos para substituir no template Diamond.
-    1. CUSTOM_HEADLINE: Título focado na JD.
-    2. SUMMARY: Executive Summary focado na dor da vaga e nas respostas dadas (máx 4 linhas).
-    3. SKILLS (1 a 4): 4 Core Competencies da JD cruzadas com meu perfil (Nome e Descrição).
-    4. EXP_TAXFIX, EXP_MIMI, EXP_TECHLEAD, EXP_SDET: Reescreva os bullets de experiência destas empresas focando APENAS em fatos reais úteis para esta vaga, utilizando os insights das respostas.
-    5. Cover Letter: Crie os 3 parágrafos (Hook Chaos-to-order, Storytelling com métricas, Closing focado em AI).
+    1. CUSTOM_HEADLINE: Foco em alta senioridade e inovação.
+    2. SUMMARY: Visão estratégica e foco em mentoria (máx 4 linhas).
+    3. SKILLS (1 a 4): Resolução de problemas em larga escala (Nome e Descrição).
+    4. EXPERIÊNCIAS (Reflita os insights das respostas da candidata):
+       - EXP_TAXFIX: Foco em Fintech/Compliance.
+       - EXP_MIMI: Foco em Product-driven/HealthTech.
+       - EXP_TECHLEAD: Foco em Team Health e Tech Debt.
+       - EXP_SDET: Foco em Automação e CI/CD Excellence.
+    5. Cover Letter (Narrativa estratégica e posicionamento de parceria):
+       - DIAMOND_HOOK: Hook "Chaos-to-order".
+       - DIAMOND_STORY: Storytelling personalizado com as nuances das respostas da candidata e métricas.
+       - DIAMOND_CLOSING: Fechamento estratégico focado em parceria.
     
     Retorne APENAS um JSON com estas chaves exatas:
     {
@@ -168,26 +184,32 @@ export async function generateDiamond(jobDescription: string, cvContent: string,
   return JSON.parse(text);
 }
 
-export async function generateGold(jobDescription: string, cvContent: string, clTemplate?: string, apiKey?: string, modelName?: string) {
+export async function generateGold(jobDescription: string, cvContent: string, companyName: string, clTemplate?: string, apiKey?: string, modelName?: string) {
   const ai = getAI(apiKey);
   const model = modelName || "gemini-2.5-flash";
   const prompt = `
-    Atue como meu Estrategista de Carreira Executiva. Aplicação NÍVEL GOLD (ATS).
+    Atue como meu Estrategista de Carreira Executiva. Aplicação NÍVEL GOLD (Strategic Alignment).
     ⚠️ NUNCA alucine fatos. Use APENAS o Master Profile V17.
     
+    IDIOMA: English (US/UK professional).
+    TOM: Professional, authoritative, and data-driven.
+    TERMINOLOGIA: Use modern IT industry standards (e.g., SDLC, Scalability, Stakeholder Management, Agile).
+    DATA: European standard (e.g., 16 April 2026).
+
     CV MASTER (V17):
     ${cvContent}
     
     JOB DESCRIPTION:
     ${jobDescription}
     
-    ${clTemplate ? `MODELO DE COVER LETTER BASE (Use como guia de tom e estrutura, mas mapeie o GOLD_REASON dentro deste contexto):\n${clTemplate}` : ''}
+    ${clTemplate ? `MODELO DE COVER LETTER BASE:\n${clTemplate}` : ''}
     
     Tarefa:
-    1. Crie TUNED_HEADLINE focada na JD.
-    2. Crie TUNED_SUMMARY (3 linhas) com densidade máxima de keywords REAIS.
-    3. Escolha 3 pilares exatos do perfil (HEADLINER_PILLAR 1, 2, 3) e descreva o match (PILLAR_DESCRIPTION 1, 2, 3).
-    4. Crie o GOLD_REASON: Um parágrafo direto mapeando 1 fato do CV para 1 requisito chave da JD para a Cover Letter.
+    1. TUNED_HEADLINE: Título de uma linha (Role + Value Prop).
+    2. TUNED_SUMMARY: Resumo de 4 linhas focado em liderança e impacto no negócio.
+    3. Escolha 3 competências centrais (HEADLINER_PILLAR 1, 2, 3) e forneça descrições de impacto (PILLAR_DESCRIPTION 1, 2, 3).
+    4. GOLD_REASON: Você DEVE completar a seguinte estrutura de frase obrigatória:
+       "I am particularly drawn to ${companyName} because of [MOTIVO_AQUI]. "
     
     Retorne APENAS um JSON com estas chaves exatas:
     {
@@ -214,8 +236,12 @@ export async function generateSilver(jobDescription: string, cvContent: string, 
   const ai = getAI(apiKey);
   const model = modelName || "gemini-2.5-flash";
   const prompt = `
-    Atue como meu Estrategista de Carreira. Aplicação NÍVEL SILVER.
+    Atue como meu Estrategista de Carreira. Aplicação NÍVEL SILVER (Application Note).
     ⚠️ NUNCA alucine fatos. Use APENAS o Master Profile V17.
+
+    IDIOMA: English (US/UK professional).
+    TOM: Professional, authoritative, and data-driven.
+    TERMINOLOGIA: Use modern IT industry standards.
     
     CV MASTER (V17):
     ${cvContent}
@@ -224,8 +250,10 @@ export async function generateSilver(jobDescription: string, cvContent: string, 
     ${jobDescription}
     
     Tarefa:
-    Escreva uma 'Application Note' (SHORT_COVER_LETTER_PLACE_HOLDER) estilo e-mail/LinkedIn (máx 150 palavras).
-    Destaque a disponibilidade para iniciar em maio e faça conexão com o pilar técnico mais alinhado entre o CV e a JD.
+    Escreva uma "Application Note" (SHORT_COVER_LETTER_PLACE_HOLDER) direcionada ao time de recrutamento. Deve funcionar como um e-mail curto e impactante.
+    MÁXIMO de 2 parágrafos:
+    - Parágrafo 1: Saudação profissional e declaração direta de contribuição/proposta de valor para o cargo.
+    - Parágrafo 2: Breve resumo de como seu perfil específico resolve um ponto de dor chave mencionado na JD.
     
     Retorne APENAS um JSON com esta chave exata:
     {
