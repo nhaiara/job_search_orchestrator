@@ -385,19 +385,19 @@ export default function Applications() {
         const currentAnswers = app.diamondAnswers || {};
         const answersStr = Object.entries(currentAnswers).map(([q, a]) => `Q: ${q}\nA: ${a}`).join('\n\n');
         
-        const result = await generateDiamond(app.jobDescription, masterProfile, answersStr, '', geminiApiKey, geminiModel);
+        const result = await generateDiamond(app.jobDescription, masterProfile, answersStr, '', geminiApiKey, geminiModel, userData?.generationRules);
         tags = { ...tags, ...result };
       } else if (isGold) {
         if (!appOverride) setGenStatus('IA gerando dados Gold...');
         cvTemplateId = cvGoldId;
         clTemplateId = clGoldId;
         
-        const result = await generateGold(app.jobDescription, masterProfile, app.company || 'Empresa', '', geminiApiKey, geminiModel);
+        const result = await generateGold(app.jobDescription, masterProfile, app.company || 'Empresa', '', geminiApiKey, geminiModel, userData?.generationRules);
         tags = { ...tags, ...result };
       } else {
         if (!appOverride) setGenStatus('IA gerando dados Silver...');
         cvTemplateId = cvSilverId;
-        const result = await generateSilver(app.jobDescription, masterProfile, geminiApiKey, geminiModel);
+        const result = await generateSilver(app.jobDescription, masterProfile, geminiApiKey, geminiModel, userData?.generationRules);
         tags = { ...tags, ...result };
       }
 

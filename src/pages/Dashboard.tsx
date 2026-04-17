@@ -213,7 +213,7 @@ export default function Dashboard() {
         clTemplateId = clDiamondId;
         
         const answersStr = Object.entries(answers).map(([q, a]) => `Q: ${q}\nA: ${a}`).join('\n\n');
-        const result = await generateDiamond(app.jobDescription, masterProfile, answersStr, '', geminiApiKey, geminiModel);
+        const result = await generateDiamond(app.jobDescription, masterProfile, answersStr, '', geminiApiKey, geminiModel, userData?.generationRules);
         tags = { ...tags, ...result };
       } else if (isGold) {
         if (!appOverride) setGenStep('finalizing');
@@ -221,13 +221,13 @@ export default function Dashboard() {
         cvTemplateId = cvGoldId;
         clTemplateId = clGoldId;
         
-        const result = await generateGold(app.jobDescription, masterProfile, app.company || 'Empresa', '', geminiApiKey, geminiModel);
+        const result = await generateGold(app.jobDescription, masterProfile, app.company || 'Empresa', '', geminiApiKey, geminiModel, userData?.generationRules);
         tags = { ...tags, ...result };
       } else {
         if (!appOverride) setGenStep('finalizing');
         if (!appOverride) setGenStatus('IA gerando aplicação Silver...');
         cvTemplateId = cvSilverId;
-        const result = await generateSilver(app.jobDescription, masterProfile, geminiApiKey, geminiModel);
+        const result = await generateSilver(app.jobDescription, masterProfile, geminiApiKey, geminiModel, userData?.generationRules);
         tags = { ...tags, ...result };
       }
 

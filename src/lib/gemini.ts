@@ -50,6 +50,46 @@ async function withRetry<T>(
   throw lastError;
 }
 
+export interface TagDefinition {
+  name: string;
+  instruction: string;
+}
+
+export interface GenerationRules {
+  tags: TagDefinition[];
+  globalRules: string;
+  silverPrompt: string;
+  goldPrompt: string;
+  diamondPrompt: string;
+}
+
+const DEFAULT_GLOBAL_RULES = `Language: English (US/UK professional).
+Tone: Professional, authoritative, and data-driven.
+Terminology: Use modern IT industry standards (e.g., SDLC, Scalability, Stakeholder Management, Agile).
+Style: Georgia size 12, Titles in Navy Blue (#002B49).
+Date Format: European standard (e.g., 16 April 2026 or 16/04/2026).
+Job Title Sanitization: Extract only the core role name from {{JOB_TITLE}}. Explicitly remove suffixes like "(all genders)", "(m/f/d)", or any gender-neutral/specific tagging.`;
+
+const DEFAULT_TAGS = [
+  { name: 'DATE', instruction: 'Gere a data atual no formato padrão europeu (ex: 16 April 2026).' },
+  { name: 'JOB_TITLE', instruction: 'Extraia o nome principal do cargo da JD, removendo sufixos de gênero (all genders, m/f/d).' },
+  { name: 'COMPANY_NAME', instruction: 'Extraia o nome da empresa contratante.' },
+  { name: 'HIRING_MANAGER', instruction: 'Extraia o nome do recrutador ou Hiring Manager, se disponível. Caso contrário use "Hiring Team".' }
+];
+
+function buildRulesPrompt(rules?: GenerationRules) {
+  const global = rules?.globalRules || DEFAULT_GLOBAL_RULES;
+  const tags = rules?.tags || DEFAULT_TAGS;
+  
+  return `
+    REGRAS GLOBAIS DE GERAÇÃO:
+    ${global}
+
+    INSTRUÇÕES PARA TAGS ESPECÍFICAS:
+    ${tags.map(t => `- ${t.name}: ${t.instruction}`).join('\n')}
+  `;
+}
+
 export async function analyzeJobMatch(jobDescription: string, cvContent: string, apiKey?: string, modelName?: string) {
   const ai = getAI(apiKey);
   const model = modelName || "gemini-2.5-flash";
@@ -118,19 +158,30 @@ export async function analyzeJobMatch(jobDescription: string, cvContent: string,
   return JSON.parse(text);
 }
 
-export async function generateDiamond(jobDescription: string, cvContent: string, userAnswers: string, clTemplate?: string, apiKey?: string, modelName?: string) {
+export async function generateDiamond(jobDescription: string, cvContent: string, userAnswers: string, clTemplate?: string, apiKey?: string, modelName?: string, rules?: GenerationRules) {
   const ai = getAI(apiKey);
   const model = modelName || "gemini-2.5-flash";
+  const rulesPrompt = buildRulesPrompt(rules);
+  const tierPrompt = rules?.diamondPrompt || `
+    Gere os textos exatos para substituir no template Diamond.
+    1. CUSTOM_HEADLINE: Foco em alta senioridade e inovação.
+    2. SUMMARY: Visão estratégica e foco em mentoria (máx 4 linhas).
+    3. SKILLS (1 a 4): Resolução de problemas em larga escala (Nome e Descrição).
+    4. EXPERIÊNCIAS (Reflita os insights das respostas da candidata):
+       - EXP_TAXFIX: Foco em Fintech/Compliance.
+       - EXP_MIMI: Foco em Product-driven/HealthTech.
+       - EXP_TECHLEAD: Foco em Team Health e Tech Debt.
+       - EXP_SDET: Foco em Automação e CI/CD Excellence.
+    5. Cover Letter: Hook "Chaos-to-order", Storytelling personalizado com métricas e fechamento estratégico.
+  `;
+
   const prompt = `
     Atue como meu Estrategista de Carreira Executiva. Aplicação NÍVEL DIAMOND (Storytelling de Alto Impacto).
-    ⚠️ NUNCA alucine fatos. Use APENAS o Master Profile V17.
+    ⚠️ NUNCA alucine fatos. Use APENAS o Master Profile.
     
-    IDIOMA: English (US/UK professional).
-    TOM: Professional, authoritative, and data-driven.
-    TERMINOLOGIA: Use modern IT industry standards (e.g., SDLC, Scalability, Stakeholder Management, Agile).
-    DATA: European standard (e.g., 16 April 2026).
+    ${rulesPrompt}
 
-    CV MASTER (V17):
+    CV MASTER:
     ${cvContent}
     
     JOB DESCRIPTION:
@@ -141,37 +192,10 @@ export async function generateDiamond(jobDescription: string, cvContent: string,
     
     ${clTemplate ? `MODELO DE COVER LETTER BASE (Use como guia de estrutura):\n${clTemplate}` : ''}
     
-    Tarefa:
-    Gere os textos exatos para substituir no template Diamond.
-    1. CUSTOM_HEADLINE: Foco em alta senioridade e inovação.
-    2. SUMMARY: Visão estratégica e foco em mentoria (máx 4 linhas).
-    3. SKILLS (1 a 4): Resolução de problemas em larga escala (Nome e Descrição).
-    4. EXPERIÊNCIAS (Reflita os insights das respostas da candidata):
-       - EXP_TAXFIX: Foco em Fintech/Compliance.
-       - EXP_MIMI: Foco em Product-driven/HealthTech.
-       - EXP_TECHLEAD: Foco em Team Health e Tech Debt.
-       - EXP_SDET: Foco em Automação e CI/CD Excellence.
-    5. Cover Letter (Narrativa estratégica e posicionamento de parceria):
-       - DIAMOND_HOOK: Hook "Chaos-to-order".
-       - DIAMOND_STORY: Storytelling personalizado com as nuances das respostas da candidata e métricas.
-       - DIAMOND_CLOSING: Fechamento estratégico focado em parceria.
+    TAREFA ESPECÍFICA DIAMOND:
+    ${tierPrompt}
     
-    Retorne APENAS um JSON com estas chaves exatas:
-    {
-      "CUSTOM_HEADLINE": "...",
-      "SUMMARY": "...",
-      "SKILL_NAME1": "...", "SKILL_DESCRIPTION1": "...",
-      "SKILL_NAME2": "...", "SKILL_DESCRIPTION2": "...",
-      "SKILL_NAME3": "...", "SKILL_DESCRIPTION3": "...",
-      "SKILL_NAME4": "...", "SKILL_DESCRIPTION4": "...",
-      "EXP_TAXFIX": "...",
-      "EXP_MIMI": "...",
-      "EXP_TECHLEAD": "...",
-      "EXP_SDET": "...",
-      "DIAMOND_HOOK": "...",
-      "DIAMOND_STORY": "...",
-      "DIAMOND_CLOSING": "..."
-    }
+    Retorne APENAS um JSON com TODAS as chaves necessárias (Tags globais definidas acima + chaves específicas do prompt Diamond).
   `;
 
   const response = await withRetry(() => ai.models.generateContent({
@@ -184,19 +208,24 @@ export async function generateDiamond(jobDescription: string, cvContent: string,
   return JSON.parse(text);
 }
 
-export async function generateGold(jobDescription: string, cvContent: string, companyName: string, clTemplate?: string, apiKey?: string, modelName?: string) {
+export async function generateGold(jobDescription: string, cvContent: string, companyName: string, clTemplate?: string, apiKey?: string, modelName?: string, rules?: GenerationRules) {
   const ai = getAI(apiKey);
   const model = modelName || "gemini-2.5-flash";
+  const rulesPrompt = buildRulesPrompt(rules);
+  const tierPrompt = rules?.goldPrompt || `
+    1. TUNED_HEADLINE: Título de uma linha (Role + Value Prop).
+    2. TUNED_SUMMARY: Resumo de 4 linhas focado em liderança e impacto no negócio.
+    3. Escolha 3 competências centrais (HEADLINER_PILLAR 1, 2, 3) e forneça descrições de impacto (PILLAR_DESCRIPTION 1, 2, 3).
+    4. GOLD_REASON: Você DEVE completar a seguinte estrutura de frase obrigatória: "I am particularly drawn to ${companyName} because of [MOTIVO_AQUI]. "
+  `;
+
   const prompt = `
     Atue como meu Estrategista de Carreira Executiva. Aplicação NÍVEL GOLD (Strategic Alignment).
-    ⚠️ NUNCA alucine fatos. Use APENAS o Master Profile V17.
+    ⚠️ NUNCA alucine fatos. Use APENAS o Master Profile.
     
-    IDIOMA: English (US/UK professional).
-    TOM: Professional, authoritative, and data-driven.
-    TERMINOLOGIA: Use modern IT industry standards (e.g., SDLC, Scalability, Stakeholder Management, Agile).
-    DATA: European standard (e.g., 16 April 2026).
+    ${rulesPrompt}
 
-    CV MASTER (V17):
+    CV MASTER:
     ${cvContent}
     
     JOB DESCRIPTION:
@@ -204,22 +233,10 @@ export async function generateGold(jobDescription: string, cvContent: string, co
     
     ${clTemplate ? `MODELO DE COVER LETTER BASE:\n${clTemplate}` : ''}
     
-    Tarefa:
-    1. TUNED_HEADLINE: Título de uma linha (Role + Value Prop).
-    2. TUNED_SUMMARY: Resumo de 4 linhas focado em liderança e impacto no negócio.
-    3. Escolha 3 competências centrais (HEADLINER_PILLAR 1, 2, 3) e forneça descrições de impacto (PILLAR_DESCRIPTION 1, 2, 3).
-    4. GOLD_REASON: Você DEVE completar a seguinte estrutura de frase obrigatória:
-       "I am particularly drawn to ${companyName} because of [MOTIVO_AQUI]. "
+    TAREFA ESPECÍFICA GOLD:
+    ${tierPrompt}
     
-    Retorne APENAS um JSON com estas chaves exatas:
-    {
-      "TUNED_HEADLINE": "...",
-      "TUNED_SUMMARY": "...",
-      "HEADLINER_PILLAR1": "...", "PILLAR_DESCRIPTION1": "...",
-      "HEADLINER_PILLAR2": "...", "PILLAR_DESCRIPTION2": "...",
-      "HEADLINER_PILLAR3": "...", "PILLAR_DESCRIPTION3": "...",
-      "GOLD_REASON": "..."
-    }
+    Retorne APENAS um JSON com TODAS as chaves necessárias (Tags globais definidas acima + chaves específicas do prompt Gold).
   `;
 
   const response = await withRetry(() => ai.models.generateContent({
@@ -232,33 +249,33 @@ export async function generateGold(jobDescription: string, cvContent: string, co
   return JSON.parse(text);
 }
 
-export async function generateSilver(jobDescription: string, cvContent: string, apiKey?: string, modelName?: string) {
+export async function generateSilver(jobDescription: string, cvContent: string, apiKey?: string, modelName?: string, rules?: GenerationRules) {
   const ai = getAI(apiKey);
   const model = modelName || "gemini-2.5-flash";
+  const rulesPrompt = buildRulesPrompt(rules);
+  const tierPrompt = rules?.silverPrompt || `
+    Escreva uma "Application Note" (SHORT_COVER_LETTER_PLACE_HOLDER) direcionada ao time de recrutamento. Deve funcionar como um e-mail curto e impactante.
+    MÁXIMO de 2 parágrafos:
+    - Parágrafo 1: Saudação profissional e declaração direta de contribuição/proposta de valor para o cargo.
+    - Parágrafo 2: Breve resumo de como seu perfil específico resolve um ponto de dor chave mencionado na JD.
+  `;
+
   const prompt = `
     Atue como meu Estrategista de Carreira. Aplicação NÍVEL SILVER (Application Note).
-    ⚠️ NUNCA alucine fatos. Use APENAS o Master Profile V17.
+    ⚠️ NUNCA alucine fatos. Use APENAS o Master Profile.
 
-    IDIOMA: English (US/UK professional).
-    TOM: Professional, authoritative, and data-driven.
-    TERMINOLOGIA: Use modern IT industry standards.
+    ${rulesPrompt}
     
-    CV MASTER (V17):
+    CV MASTER:
     ${cvContent}
     
     JOB DESCRIPTION:
     ${jobDescription}
     
-    Tarefa:
-    Escreva uma "Application Note" (SHORT_COVER_LETTER_PLACE_HOLDER) direcionada ao time de recrutamento. Deve funcionar como um e-mail curto e impactante.
-    MÁXIMO de 2 parágrafos:
-    - Parágrafo 1: Saudação profissional e declaração direta de contribuição/proposta de valor para o cargo.
-    - Parágrafo 2: Breve resumo de como seu perfil específico resolve um ponto de dor chave mencionado na JD.
+    TAREFA ESPECÍFICA SILVER:
+    ${tierPrompt}
     
-    Retorne APENAS um JSON com esta chave exata:
-    {
-      "SHORT_COVER_LETTER_PLACE_HOLDER": "..."
-    }
+    Retorne APENAS um JSON with TODAS as chaves necessárias (Tags globais definidas acima + chaves específicas do prompt Silver).
   `;
 
   const response = await withRetry(() => ai.models.generateContent({

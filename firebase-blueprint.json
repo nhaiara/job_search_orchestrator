@@ -19,6 +19,25 @@
         "cvSilverFileId": { "type": "string", "description": "The Google Drive File ID for CV Silver." },
         "clDiamondFileId": { "type": "string", "description": "The Google Drive File ID for Cover Letter Diamond." },
         "clGoldFileId": { "type": "string", "description": "The Google Drive File ID for Cover Letter Gold." },
+        "generationRules": {
+          "type": "object",
+          "properties": {
+            "tags": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "instruction": { "type": "string" }
+                }
+              }
+            },
+            "globalRules": { "type": "string" },
+            "silverPrompt": { "type": "string" },
+            "goldPrompt": { "type": "string" },
+            "diamondPrompt": { "type": "string" }
+          }
+        },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "masterProfile"]

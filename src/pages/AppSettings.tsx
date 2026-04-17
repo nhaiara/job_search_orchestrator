@@ -14,7 +14,42 @@ const DEFAULT_RULES = `1. Altíssima: Fintech + AI/Data + Berlin ou remoto + Sen
 2. Alta: AI Platform + hibrida + ≥70% de match entre os requisitos/responsabilidades e meu perfil master. Status sugerido: "🤖 Auto".
 3. Média: Vagas de EM puro ou fora de Berlim + entre 50% e 70% de match entre os requisitos/responsabilidades e meu perfil master. Status sugerido: "🤖 Auto".
 4. Baixa: Gaps técnicos profundos (C++, Embedded) ou + <50% de match entre os requisitos/responsabilidades e meu perfil master. Status sugerido: "🤖 Auto".
-5. Incompatível: Se a vaga exigir Alemão (Must-have). Status sugerido: "🗑️ Descarte".`;
+5. Incompatible: Se a vaga exigir Alemão (Must-have). Status sugerido: "🗑️ Descarte".`;
+
+const DEFAULT_GLOBAL_RULES = `Language: English (US/UK professional).
+Tone: Professional, authoritative, and data-driven.
+Terminology: Use modern IT industry standards (e.g., SDLC, Scalability, Stakeholder Management, Agile).
+Style: Georgia size 12, Titles in Navy Blue (#002B49).
+Date Format: European standard (e.g., 16 April 2026 or 16/04/2026).
+Job Title Sanitization: Extract only the core role name from {{JOB_TITLE}}. Explicitly remove suffixes like "(all genders)", "(m/f/d)", or any gender-neutral/specific tagging.`;
+
+const DEFAULT_TAGS = [
+  { name: 'DATE', instruction: 'Gere a data atual no formato padrão europeu (ex: 16 April 2026).' },
+  { name: 'JOB_TITLE', instruction: 'Extraia o nome principal do cargo da JD, removendo sufixos de gênero (all genders, m/f/d).' },
+  { name: 'COMPANY_NAME', instruction: 'Extraia o nome da empresa contratante.' },
+  { name: 'HIRING_MANAGER', instruction: 'Extraia o nome do recrutador ou Hiring Manager, se disponível. Caso contrário use "Hiring Team".' }
+];
+
+const DEFAULT_SILVER_PROMPT = `Escreva uma "Application Note" direcionada ao time de recrutamento. Deve funcionar como um e-mail curto e impactante.
+MÁXIMO de 2 parágrafos:
+1. Saudação profissional e declaração direta de contribuição/proposta de valor para o cargo.
+2. Breve resumo de como seu perfil específico resolve um ponto de dor chave mencionado na JD.`;
+
+const DEFAULT_GOLD_PROMPT = `1. TUNED_HEADLINE: Título de uma linha (Role + Value Prop).
+2. TUNED_SUMMARY: Resumo de 4 linhas focado em liderança e impacto no negócio.
+3. Escolha 3 competências centrais (HEADLINER_PILLAR 1, 2, 3) e forneça descrições de impacto (PILLAR_DESCRIPTION 1, 2, 3).
+4. GOLD_REASON: Complete a estrutura: "I am particularly drawn to {{COMPANY_NAME}} because of [MOTIVO_AQUI]."`;
+
+const DEFAULT_DIAMOND_PROMPT = `Gere os textos exatos para substituir no template Diamond:
+1. CUSTOM_HEADLINE: Foco em alta senioridade e inovação.
+2. SUMMARY: Visão estratégica e foco em mentoria (máx 4 linhas).
+3. SKILLS (1 a 4): Resolução de problemas em larga escala (Nome e Descrição).
+4. EXPERIÊNCIAS (Reflita os insights das respostas da candidata):
+   - EXP_TAXFIX: Foco em Fintech/Compliance.
+   - EXP_MIMI: Foco em Product-driven/HealthTech.
+   - EXP_TECHLEAD: Foco em Team Health e Tech Debt.
+   - EXP_SDET: Foco em Automação e CI/CD Excellence.
+5. Cover Letter: Hook "Chaos-to-order", Storytelling personalizado com métricas e fechamento estratégico.`;
 
 export default function AppSettings() {
   const { user } = useAuth();
@@ -33,8 +68,16 @@ export default function AppSettings() {
     clDiamondFileId: '',
     clGoldFileId: '',
     geminiApiKey: '',
-    geminiModel: 'gemini-2.5-flash'
+    geminiModel: 'gemini-2.5-flash',
+    generationRules: {
+      tags: DEFAULT_TAGS,
+      globalRules: DEFAULT_GLOBAL_RULES,
+      silverPrompt: DEFAULT_SILVER_PROMPT,
+      goldPrompt: DEFAULT_GOLD_PROMPT,
+      diamondPrompt: DEFAULT_DIAMOND_PROMPT
+    }
   });
+
   const [syncingProfile, setSyncingProfile] = useState(false);
   const [googleTokens, setGoogleTokens] = useState<any>(() => {
     const saved = localStorage.getItem('google_drive_tokens');
@@ -78,7 +121,8 @@ export default function AppSettings() {
           setProfile(prev => ({ 
             ...prev, 
             ...data,
-            customRules: data.customRules || DEFAULT_RULES
+            customRules: data.customRules || DEFAULT_RULES,
+            generationRules: data.generationRules || prev.generationRules
           }));
         }
       } catch (error) {
@@ -492,6 +536,125 @@ export default function AppSettings() {
           <p className="mt-4 text-xs text-slate-400 italic">
             Dica: Mantenha seu Perfil Master atualizado no Google Drive e clique em "Sincronizar Agora" para que a IA use a versão mais recente.
           </p>
+        </section>
+
+        {/* Document Generation Rules Section */}
+        <section className="bg-white p-8 rounded-2xl border border-slate-100 shadow-sm">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center text-blue-600">
+              <Sparkles size={20} />
+            </div>
+            <h3 className="text-lg font-bold text-slate-900">Regras de Geração de Documentos</h3>
+          </div>
+
+          <div className="space-y-8">
+            {/* Global Rules */}
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Regras Globais (Tom, Estilo, Idioma)</label>
+              <textarea
+                value={profile.generationRules.globalRules}
+                onChange={(e) => setProfile({
+                  ...profile,
+                  generationRules: { ...profile.generationRules, globalRules: e.target.value }
+                })}
+                className="w-full h-40 mt-1 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 transition-all outline-none leading-relaxed"
+                placeholder="Ex: Idioma Inglês, tom profissional, fonte Georgia..."
+              />
+            </div>
+
+            {/* Tags Section */}
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Definições de Tags</label>
+                <button
+                  onClick={() => {
+                    const newTags = [...profile.generationRules.tags, { name: '', instruction: '' }];
+                    setProfile({ ...profile, generationRules: { ...profile.generationRules, tags: newTags } });
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-xs font-bold transition-colors"
+                >
+                  <Plus size={14} /> Adicionar Tag
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-3">
+                {profile.generationRules.tags.map((tag, index) => (
+                  <div key={index} className="flex flex-col md:flex-row gap-2 p-3 bg-slate-50/50 border border-slate-100 rounded-xl group relative">
+                    <input
+                      type="text"
+                      value={tag.name}
+                      onChange={(e) => {
+                        const newTags = [...profile.generationRules.tags];
+                        newTags[index].name = e.target.value.toUpperCase().replace(/\s/g, '_');
+                        setProfile({ ...profile, generationRules: { ...profile.generationRules, tags: newTags } });
+                      }}
+                      placeholder="TAG_NAME"
+                      className="w-full md:w-1/4 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                    <input
+                      type="text"
+                      value={tag.instruction}
+                      onChange={(e) => {
+                        const newTags = [...profile.generationRules.tags];
+                        newTags[index].instruction = e.target.value;
+                        setProfile({ ...profile, generationRules: { ...profile.generationRules, tags: newTags } });
+                      }}
+                      placeholder="O que a IA deve gerar para esta tag?"
+                      className="flex-1 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
+                    <button
+                      onClick={() => {
+                        const newTags = profile.generationRules.tags.filter((_, i) => i !== index);
+                        setProfile({ ...profile, generationRules: { ...profile.generationRules, tags: newTags } });
+                      }}
+                      className="md:relative absolute top-2 right-2 p-2 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                      title="Remover Tag"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Tier prompts */}
+            <div className="grid grid-cols-1 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Prompt: Nível SILVER</label>
+                  <textarea
+                    value={profile.generationRules.silverPrompt}
+                    onChange={(e) => setProfile({
+                      ...profile,
+                      generationRules: { ...profile.generationRules, silverPrompt: e.target.value }
+                    })}
+                    className="w-full h-48 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 transition-all outline-none leading-relaxed"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Prompt: Nível GOLD</label>
+                  <textarea
+                    value={profile.generationRules.goldPrompt}
+                    onChange={(e) => setProfile({
+                      ...profile,
+                      generationRules: { ...profile.generationRules, goldPrompt: e.target.value }
+                    })}
+                    className="w-full h-48 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 transition-all outline-none leading-relaxed"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Prompt: Nível DIAMOND</label>
+                <textarea
+                  value={profile.generationRules.diamondPrompt}
+                  onChange={(e) => setProfile({
+                    ...profile,
+                    generationRules: { ...profile.generationRules, diamondPrompt: e.target.value }
+                  })}
+                  className="w-full h-48 px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 transition-all outline-none leading-relaxed"
+                />
+              </div>
+            </div>
+          </div>
         </section>
 
         {/* Templates Section */}
