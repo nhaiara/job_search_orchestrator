@@ -33,13 +33,15 @@ const CV_LEVEL_3_ID = '1eCyJTG_IItfwzk3EBzRGCvTX1sT7g49UaD-x8gGC0rE';
 const CV_LEVEL_1_2_ID = '11Icr9xJSx-Dr8piplsltIai9oOeu2qdh-qIqAaiRQS4';
 const OUTPUT_FOLDER_ID = '1VLI8Lhz6CVhkPRKhwI64ArfzoIwkLork';
 const PROCESSED_FOLDER_ID = '1kjYwJliWojpWm0TfbGDeTp3-9foVES8_';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { extractFileId } from '../lib/driveUtils';
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const navigate = useNavigate();
+
   const [stats, setStats] = useState({
     total: 0,
     ready: 0,
@@ -594,10 +596,10 @@ export default function Dashboard() {
   };
 
   const statCards = [
-    { name: 'Total de Vagas', value: stats.total, icon: TrendingUp, color: 'blue' },
-    { name: '✅ Aplicar', value: stats.ready, icon: CheckCircle2, color: 'green' },
-    { name: '📩 Triagem', value: stats.sent, icon: Clock, color: 'indigo' },
-    { name: 'Diamond (💎)', value: stats.manual, icon: AlertCircle, color: 'amber' },
+    { name: 'Total de Vagas', value: stats.total, icon: TrendingUp, color: 'blue', filter: 'All' },
+    { name: '✅ Aplicar', value: stats.ready, icon: CheckCircle2, color: 'green', filter: '✅ Aplicar' },
+    { name: '📩 Triagem', value: stats.sent, icon: Clock, color: 'indigo', filter: '📩 Triagem' },
+    { name: 'Diamond (💎)', value: stats.manual, icon: AlertCircle, color: 'amber', filter: 'Diamond' },
   ];
 
   return (
@@ -627,9 +629,16 @@ export default function Dashboard() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.1 }}
-            className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm"
+            onClick={() => {
+              if (stat.filter === 'Diamond') {
+                navigate(`/applications?tier=Diamond`);
+              } else {
+                navigate(`/applications?status=${encodeURIComponent(stat.filter)}`);
+              }
+            }}
+            className="bg-white p-6 rounded-2xl border border-slate-100 shadow-sm cursor-pointer hover:shadow-md hover:border-blue-100 transition-all group"
           >
-            <div className={`w-12 h-12 rounded-xl bg-${stat.color}-50 flex items-center justify-center mb-4`}>
+            <div className={`w-12 h-12 rounded-xl bg-${stat.color}-50 flex items-center justify-center mb-4 transition-transform group-hover:scale-110`}>
               <stat.icon className={`text-${stat.color}-600`} size={24} />
             </div>
             <p className="text-sm font-medium text-slate-500">{stat.name}</p>
@@ -1015,7 +1024,7 @@ export default function Dashboard() {
                       {selectedApp.status === '✅ Aplicar' ? (
                         <button 
                           onClick={() => {
-                            updateStatus(selectedApp.id, '🚀 Aplicada');
+                            updateStatus(selectedApp.id, '📩 Triagem');
                             setIsDetailOpen(false);
                           }}
                           className="px-8 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 flex items-center gap-2"

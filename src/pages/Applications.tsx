@@ -5,6 +5,7 @@ import { useAuth } from '../hooks/useAuth';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { extractFileId } from '../lib/driveUtils';
+import { useSearchParams } from 'react-router-dom';
 import { 
   analyzeJobMatch,
   generateDiamond,
@@ -42,6 +43,7 @@ const PROCESSED_FOLDER_ID = '1kjYwJliWojpWm0TfbGDeTp3-9foVES8_';
 
 export default function Applications() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
   const [apps, setApps] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -65,7 +67,15 @@ export default function Applications() {
   const [questions, setQuestions] = useState<string[]>([]);
   const [answers, setAnswers] = useState<{[key: string]: string}>({});
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterStatus, setFilterStatus] = useState<string>('All');
+  const [filterStatus, setFilterStatus] = useState<string>(searchParams.get('status') || 'All');
+  const [filterTier, setFilterTier] = useState<string>(searchParams.get('tier') || 'All');
+
+  useEffect(() => {
+    const status = searchParams.get('status');
+    const tier = searchParams.get('tier');
+    if (status) setFilterStatus(status);
+    if (tier) setFilterTier(tier);
+  }, [searchParams]);
   const [isDiscardModalOpen, setIsDiscardModalOpen] = useState(false);
   const [discardingAppId, setDiscardingAppId] = useState<string | null>(null);
   const [discardReason, setDiscardReason] = useState('');
@@ -713,9 +723,10 @@ export default function Applications() {
       app.company?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       app.role?.toLowerCase().includes(searchTerm.toLowerCase());
     
-    const matchesFilter = filterStatus === 'All' || app.status === filterStatus;
+    const matchesStatus = filterStatus === 'All' || app.status === filterStatus;
+    const matchesTier = filterTier === 'All' || app.matchScore === filterTier;
     
-    return matchesSearch && matchesFilter;
+    return matchesSearch && matchesStatus && matchesTier;
   });
 
   return (
@@ -787,6 +798,17 @@ export default function Applications() {
             <option value="🤝 Sucesso">🤝 Sucesso</option>
             <option value="❌ Rejeitada">❌ Rejeitada</option>
             <option value="🗑️ Descarte">🗑️ Descarte</option>
+          </select>
+          <select 
+            value={filterTier}
+            onChange={(e) => setFilterTier(e.target.value)}
+            className="flex-1 md:flex-none px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors outline-none bg-white"
+          >
+            <option value="All">Todos os Tiers</option>
+            <option value="Diamond">💎 Diamond</option>
+            <option value="Gold">🥇 Gold</option>
+            <option value="Silver">🥈 Silver</option>
+            <option value="Discard">🗑️ Discard</option>
           </select>
         </div>
       </div>
@@ -1402,7 +1424,7 @@ export default function Applications() {
                       {selectedApp.status === '✅ Aplicar' ? (
                         <button 
                           onClick={() => {
-                            updateStatus(selectedApp.id, '🚀 Aplicada');
+                            updateStatus(selectedApp.id, '📩 Triagem');
                             setIsDetailOpen(false);
                           }}
                           className="px-8 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 flex items-center gap-2"
