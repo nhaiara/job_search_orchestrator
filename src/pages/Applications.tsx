@@ -9,7 +9,8 @@ import {
   analyzeJobMatch,
   generateDiamond,
   generateGold,
-  generateSilver
+  generateSilver,
+  updateMasterProfileWithLearnings
 } from '../lib/gemini';
 import { 
   Search, 
@@ -387,6 +388,35 @@ export default function Applications() {
         
         const result = await generateDiamond(app.jobDescription, masterProfile, answersStr, '', geminiApiKey, geminiModel, userData?.generationRules);
         tags = { ...tags, ...result };
+
+        // Save learning to Master Profile
+        if (!appOverride) setGenStatus('IA atualizando Perfil Master com novos aprendizados...');
+        const updatedProfile = await updateMasterProfileWithLearnings(masterProfile, answersStr, geminiApiKey, geminiModel);
+        if (updatedProfile && updatedProfile !== masterProfile) {
+          await updateDoc(doc(db, 'users', user.uid), {
+            masterProfile: updatedProfile,
+            updatedAt: new Date().toISOString()
+          });
+
+          // Sync back to Google Doc if available
+          if (userData?.masterProfileFileId && googleTokens?.access_token) {
+            try {
+              if (!appOverride) setGenStatus('Sincronizando Perfil Master com Google Drive...');
+              await fetch('/api/update-doc-content', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  fileId: userData.masterProfileFileId,
+                  content: updatedProfile,
+                  accessToken: googleTokens.access_token,
+                  refreshToken: googleTokens.refresh_token
+                })
+              });
+            } catch (syncError) {
+              console.error('Failed to sync master profile to Drive:', syncError);
+            }
+          }
+        }
       } else if (isGold) {
         if (!appOverride) setGenStatus('IA gerando dados Gold...');
         cvTemplateId = cvGoldId;

@@ -87,6 +87,11 @@ function buildRulesPrompt(rules?: GenerationRules) {
 
     INSTRUÇÕES PARA TAGS ESPECÍFICAS:
     ${tags.map(t => `- ${t.name}: ${t.instruction}`).join('\n')}
+
+    REGRAS DE FORMATO (MANDATÓRIO):
+    - O retorno DEVE ser um JSON plano (flat). 
+    - TODAS as chaves devem ter valores do tipo STRING. 
+    - NUNCA use objetos ou arrays aninhados dentro dos valores.
   `;
 }
 
@@ -164,15 +169,17 @@ export async function generateDiamond(jobDescription: string, cvContent: string,
   const rulesPrompt = buildRulesPrompt(rules);
   const tierPrompt = rules?.diamondPrompt || `
     Gere os textos exatos para substituir no template Diamond.
-    1. CUSTOM_HEADLINE: Foco em alta senioridade e inovação.
-    2. SUMMARY: Visão estratégica e foco em mentoria (máx 4 linhas).
-    3. SKILLS (1 a 4): Resolução de problemas em larga escala (Nome e Descrição).
-    4. EXPERIÊNCIAS (Reflita os insights das respostas da candidata):
-       - EXP_TAXFIX: Foco em Fintech/Compliance.
-       - EXP_MIMI: Foco em Product-driven/HealthTech.
-       - EXP_TECHLEAD: Foco em Team Health e Tech Debt.
-       - EXP_SDET: Foco em Automação e CI/CD Excellence.
-    5. Cover Letter: Hook "Chaos-to-order", Storytelling personalizado com métricas e fechamento estratégico.
+    Chaves específicas exigidas:
+    - CUSTOM_HEADLINE: Foco em alta senioridade e inovação.
+    - SUMMARY: Visão estratégica e foco em mentoria (máx 4 linhas).
+    - SKILL_NAME1, SKILL_DESCRIPTION1, SKILL_NAME2, SKILL_DESCRIPTION2, SKILL_NAME3, SKILL_DESCRIPTION3, SKILL_NAME4, SKILL_DESCRIPTION4: 4 Skills de impacto com nome e descrição curta.
+    - EXP_TAXFIX: Foco em Fintech/Compliance.
+    - EXP_MIMI: Foco em Product-driven/HealthTech.
+    - EXP_TECHLEAD: Foco em Team Health e Tech Debt.
+    - EXP_SDET: Foco em Automação e CI/CD Excellence.
+    - DIAMOND_HOOK: Hook "Chaos-to-order".
+    - DIAMOND_STORY: Storytelling personalizado com métricas.
+    - DIAMOND_CLOSING: Fechamento estratégico.
   `;
 
   const prompt = `
@@ -289,3 +296,41 @@ export async function generateSilver(jobDescription: string, cvContent: string, 
 }
 
 export const analyzeJob = analyzeJobMatch;
+
+export async function updateMasterProfileWithLearnings(
+  masterProfile: string,
+  userAnswers: string,
+  apiKey?: string,
+  modelName?: string
+) {
+  const ai = getAI(apiKey);
+  const model = modelName || "gemini-2.5-flash";
+  const prompt = `
+    Atue como meu Editor de Perfil Master. O perfil master é a base de conhecimento sobre minha carreira.
+    Recebi novas informações detalhadas (Diamond Application Learnings) através de respostas a perguntas de uma aplicação.
+    
+    PERFIL MASTER ATUAL:
+    ${masterProfile}
+    
+    NOVOS APRENDIZADOS (RESPOSTAS DA CANDIDATA):
+    ${userAnswers}
+    
+    OBJETIVO:
+    1. Analisar se os "Novos Aprendizados" trazem informações, conquistas ou exemplos mais detalhados que enriquecem o Perfil Master.
+    2. Se a informação já existe de forma idêntica ou o perfil atual já é mais detalhado, igore esse ponto.
+    3. Se houver informações novas ou métricas mais precisas, adicione-as ao final do Perfil Master em uma seção chamada "# Diamond Applications Learnings".
+    4. Se a seção "# Diamond Applications Learnings" já existir, anexe os novos aprendizados a ela em formato de bullet points, mantendo a organização.
+    5. Mantenha o idioma original do perfil (provavelmente Inglês) e o tom profissional.
+    
+    INSTRUÇÕES DE SAÍDA:
+    - Retorne APENAS o conteúdo Markdown do Perfil Master completo e atualizado.
+    - Não inclua preâmbulos, explicações ou blocos de código. Apenas o texto puro do Markdown.
+  `;
+
+  const response = await withRetry(() => ai.models.generateContent({
+    model,
+    contents: prompt,
+  }), model, !!apiKey);
+
+  return response.text?.trim() || masterProfile;
+}

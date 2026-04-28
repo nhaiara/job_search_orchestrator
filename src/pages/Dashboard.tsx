@@ -26,7 +26,8 @@ import {
   analyzeJobMatch,
   generateDiamond,
   generateGold,
-  generateSilver
+  generateSilver,
+  updateMasterProfileWithLearnings
 } from '../lib/gemini';
 const CV_LEVEL_3_ID = '1eCyJTG_IItfwzk3EBzRGCvTX1sT7g49UaD-x8gGC0rE';
 const CV_LEVEL_1_2_ID = '11Icr9xJSx-Dr8piplsltIai9oOeu2qdh-qIqAaiRQS4';
@@ -215,6 +216,35 @@ export default function Dashboard() {
         const answersStr = Object.entries(answers).map(([q, a]) => `Q: ${q}\nA: ${a}`).join('\n\n');
         const result = await generateDiamond(app.jobDescription, masterProfile, answersStr, '', geminiApiKey, geminiModel, userData?.generationRules);
         tags = { ...tags, ...result };
+
+        // Save learning to Master Profile
+        if (!appOverride) setGenStatus('IA atualizando Perfil Master com novos aprendizados...');
+        const updatedProfile = await updateMasterProfileWithLearnings(masterProfile, answersStr, geminiApiKey, geminiModel);
+        if (updatedProfile && updatedProfile !== masterProfile) {
+          await updateDoc(doc(db, 'users', user.uid), {
+            masterProfile: updatedProfile,
+            updatedAt: new Date().toISOString()
+          });
+
+          // Sync back to Google Doc if available
+          if (userData?.masterProfileFileId && googleTokens?.access_token) {
+            try {
+              if (!appOverride) setGenStatus('Sincronizando Perfil Master com Google Drive...');
+              await fetch('/api/update-doc-content', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  fileId: userData.masterProfileFileId,
+                  content: updatedProfile,
+                  accessToken: googleTokens.access_token,
+                  refreshToken: googleTokens.refresh_token
+                })
+              });
+            } catch (syncError) {
+              console.error('Failed to sync master profile to Drive:', syncError);
+            }
+          }
+        }
       } else if (isGold) {
         if (!appOverride) setGenStep('finalizing');
         if (!appOverride) setGenStatus('IA gerando documentos Gold...');

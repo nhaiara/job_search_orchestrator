@@ -40,16 +40,10 @@ const DEFAULT_GOLD_PROMPT = `1. TUNED_HEADLINE: Título de uma linha (Role + Val
 3. Escolha 3 competências centrais (HEADLINER_PILLAR 1, 2, 3) e forneça descrições de impacto (PILLAR_DESCRIPTION 1, 2, 3).
 4. GOLD_REASON: Complete a estrutura: "I am particularly drawn to {{COMPANY_NAME}} because of [MOTIVO_AQUI]."`;
 
-const DEFAULT_DIAMOND_PROMPT = `Gere os textos exatos para substituir no template Diamond:
-1. CUSTOM_HEADLINE: Foco em alta senioridade e inovação.
-2. SUMMARY: Visão estratégica e foco em mentoria (máx 4 linhas).
-3. SKILLS (1 a 4): Resolução de problemas em larga escala (Nome e Descrição).
-4. EXPERIÊNCIAS (Reflita os insights das respostas da candidata):
-   - EXP_TAXFIX: Foco em Fintech/Compliance.
-   - EXP_MIMI: Foco em Product-driven/HealthTech.
-   - EXP_TECHLEAD: Foco em Team Health e Tech Debt.
-   - EXP_SDET: Foco em Automação e CI/CD Excellence.
-5. Cover Letter: Hook "Chaos-to-order", Storytelling personalizado com métricas e fechamento estratégico.`;
+const DEFAULT_DIAMOND_PROMPT = `Gere os textos exatos para substituir no template Diamond. Use chaves específicas: CUSTOM_HEADLINE, SUMMARY, SKILL_NAME1, SKILL_DESCRIPTION1, SKILL_NAME2, SKILL_DESCRIPTION2, SKILL_NAME3, SKILL_DESCRIPTION3, SKILL_NAME4, SKILL_DESCRIPTION4, EXP_TAXFIX, EXP_MIMI, EXP_TECHLEAD, EXP_SDET, DIAMOND_HOOK, DIAMOND_STORY, DIAMOND_CLOSING. 
+
+As skills devem ser focadas em resolução de problemas em larga escala. As experiências devem refletir os insights das respostas da candidata. 
+Cover Letter: Hook "Chaos-to-order", Storytelling personalizado com métricas e fechamento estratégico.`;
 
 export default function AppSettings() {
   const { user } = useAuth();
@@ -244,9 +238,16 @@ export default function AppSettings() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           fileId,
-          accessToken: googleTokens?.access_token
+          accessToken: googleTokens?.access_token,
+          refreshToken: googleTokens?.refresh_token
         })
       });
+
+      if (response.status === 401 || response.status === 403) {
+        setGoogleTokens(null);
+        localStorage.removeItem('google_drive_tokens');
+        throw new Error('Sessão do Google Drive expirada. Por favor, conecte novamente.');
+      }
 
       const data = await response.json();
       if (data.error) throw new Error(data.error);

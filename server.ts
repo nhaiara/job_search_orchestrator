@@ -462,6 +462,70 @@ async function startServer() {
     }
   });
 
+  app.post('/api/update-doc-content', async (req, res) => {
+    try {
+      const { fileId, content, accessToken, refreshToken } = req.body;
+      if (!fileId || content === undefined) return res.status(400).json({ error: 'Missing fileId or content' });
+
+      const driveClient = getDriveInstance(accessToken, refreshToken);
+      
+      const fileMetadata = await driveClient.files.get({
+        fileId: fileId,
+        fields: 'mimeType',
+      });
+
+      if (fileMetadata.data.mimeType === 'application/vnd.google-apps.document') {
+        const docsClient = getDocsInstance(accessToken, refreshToken);
+        const doc = await docsClient.documents.get({ documentId: fileId });
+        
+        const contentBody = doc.data.body?.content || [];
+        const length = contentBody.length > 0 ? contentBody[contentBody.length - 1].endIndex : 1;
+
+        const requests = [];
+        // If the doc has content, delete it first (except for the terminating newline)
+        if (length && length > 2) {
+          requests.push({
+            deleteContentRange: {
+              range: {
+                startIndex: 1,
+                endIndex: length - 1,
+              },
+            },
+          });
+        }
+        
+        // Insert new content
+        requests.push({
+          insertText: {
+            location: {
+              index: 1,
+            },
+            text: content,
+          },
+        });
+
+        await docsClient.documents.batchUpdate({
+          documentId: fileId,
+          requestBody: { requests },
+        });
+      } else {
+        // Plain text/markdown update
+        await driveClient.files.update({
+          fileId: fileId,
+          media: {
+            body: content,
+          },
+        });
+      }
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('Error updating drive file:', error);
+      const errorMessage = error.response?.data?.error?.message || error.message || 'Failed to update file on Google Drive';
+      res.status(500).json({ error: errorMessage });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     console.log('Starting Vite in middleware mode...');
