@@ -163,6 +163,71 @@ export async function analyzeJobMatch(jobDescription: string, cvContent: string,
   return JSON.parse(text);
 }
 
+export async function generateJobMatchQuestions(jobDescription: string, cvContent: string, apiKey?: string, modelName?: string) {
+  const ai = getAI(apiKey);
+  const model = modelName || "gemini-2.5-flash";
+  const prompt = `
+    Atue como Recrutador Sênior. Esta vaga foi classificada como NÍVEL DIAMOND (Alta importância).
+    
+    Analise a JOB DESCRIPTION e o CV MASTER da candidata.
+    Gere de 3 a 5 perguntas estratégicas para que a candidata possa fornecer detalhes que permitam uma customização extrema dos documentos de aplicação.
+    
+    CV MASTER:
+    ${cvContent}
+    
+    JOB DESCRIPTION:
+    ${jobDescription}
+    
+    Retorne APENAS um JSON:
+    {
+      "diamondQuestions": ["Pergunta 1?", "Pergunta 2?", "Pergunta 3?"]
+    }
+  `;
+
+  const response = await withRetry(() => ai.models.generateContent({
+    model,
+    contents: prompt,
+    config: { responseMimeType: "application/json" }
+  }), model, !!apiKey);
+
+  const text = response.text || "{}";
+  const data = JSON.parse(text);
+  return data.diamondQuestions || [];
+}
+
+export async function generateInterviewPreparation(jobDescription: string, cvContent: string, interviewNotes: string, apiKey?: string, modelName?: string) {
+  const ai = getAI(apiKey);
+  const model = modelName || "gemini-1.5-pro"; // Use Pro for complex reasoning tasks
+  const prompt = `
+    Atue como Coach de Carreira e Recrutador Sênior. 
+    Analise a JOB DESCRIPTION, o CV da candidata e as ANOTAÇÕES sobre a entrevista agendada (pode ser o conteúdo de um convite por e-mail ou notas próprias).
+    
+    JOB DESCRIPTION:
+    ${jobDescription}
+    
+    CV MASTER:
+    ${cvContent}
+    
+    ANOTAÇÕES DA ENTREVISTA:
+    ${interviewNotes}
+    
+    Com base nisso, gere um guia de preparação personalizado contendo:
+    1. "Foco da Conversa": O que provavelmente será o centro dessa entrevista (técnico, cultura, liderança?).
+    2. "Pontos Fortes para Destacar": Quais experiências do CV mais brilham para esta vaga específica.
+    3. "Perguntas Prováveis": 3-5 perguntas que ela deve estar pronta para responder.
+    4. "Dicas de Diferenciação": Como ela pode se destacar dos outros candidatos.
+    
+    Retorne o resultado em MARKDOWN formatado, direto e encorajador.
+  `;
+
+  const response = await withRetry(() => ai.models.generateContent({
+    model,
+    contents: prompt
+  }), model, !!apiKey);
+
+  return response.text || "Não foi possível gerar as dicas no momento.";
+}
+
 export async function generateDiamond(jobDescription: string, cvContent: string, userAnswers: string, clTemplate?: string, apiKey?: string, modelName?: string, rules?: GenerationRules) {
   const ai = getAI(apiKey);
   const model = modelName || "gemini-2.5-flash";

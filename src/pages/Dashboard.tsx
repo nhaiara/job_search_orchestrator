@@ -3,6 +3,7 @@ import { collection, query, onSnapshot, orderBy, limit, addDoc, doc, updateDoc, 
 import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
 import { useAuth } from '../hooks/useAuth';
 import { motion } from 'motion/react';
+import { getStatusStyle, getTierStyle } from '../lib/styleUtils';
 import { 
   TrendingUp, 
   CheckCircle2, 
@@ -20,14 +21,27 @@ import {
   Zap,
   RefreshCw,
   Trash2,
-  X
+  X,
+  Gem,
+  Award,
+  Trophy,
+  Handshake,
+  AlertTriangle,
+  Users,
+  PlusCircle,
+  Brain,
+  Star,
+  ChevronDown,
+  PlayCircle
 } from 'lucide-react';
 import { 
   analyzeJobMatch,
   generateDiamond,
   generateGold,
   generateSilver,
-  updateMasterProfileWithLearnings
+  updateMasterProfileWithLearnings,
+  generateJobMatchQuestions,
+  generateInterviewPreparation
 } from '../lib/gemini';
 const CV_LEVEL_3_ID = '1eCyJTG_IItfwzk3EBzRGCvTX1sT7g49UaD-x8gGC0rE';
 const CV_LEVEL_1_2_ID = '11Icr9xJSx-Dr8piplsltIai9oOeu2qdh-qIqAaiRQS4';
@@ -38,19 +52,23 @@ import { AnimatePresence } from 'motion/react';
 import { cn } from '../lib/utils';
 import { extractFileId } from '../lib/driveUtils';
 
+import Markdown from 'react-markdown';
+
 export default function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
   const [stats, setStats] = useState({
-    total: 0,
-    ready: 0,
-    sent: 0,
-    manual: 0
+    pendingAction: 0,
+    feedback: 0,
+    interviews: 0,
+    activeDiamonds: 0,
+    closed: 0
   });
   const [recentApps, setRecentApps] = useState<any[]>([]);
   const [selectedApp, setSelectedApp] = useState<any>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
+  const [isDescExpanded, setIsDescExpanded] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [pendingSync, setPendingSync] = useState(false);
@@ -63,6 +81,15 @@ export default function Dashboard() {
   });
   const [questions, setQuestions] = useState<string[]>([]);
   const [answers, setAnswers] = useState<{[key: string]: string}>({});
+
+  const saveAnswers = async (newAnswers: any) => {
+    setAnswers(newAnswers);
+    if (!user || !selectedApp) return;
+    await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
+      diamondAnswers: newAnswers,
+      updatedAt: new Date().toISOString()
+    });
+  };
   const [notification, setNotification] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   const genStatusRef = useRef<HTMLDivElement>(null);
   const questionsRef = useRef<HTMLDivElement>(null);
@@ -71,12 +98,91 @@ export default function Dashboard() {
 
   const updateStatus = async (id: string, status: string) => {
     if (!user) return;
+    
+    // Find the app to check its current tier
+    const appToUpdate = recentApps.find(a => a.id === id) || (topMatch?.id === id ? topMatch : null);
+    let extraData = {};
+
+    // Se o usuário está tirando do descarte para o processamento, precisamos dar um "tier" para a vaga
+    if (appToUpdate?.matchScore === 'Discard' || !appToUpdate?.matchScore) {
+      if (status === '⏳ Input IA') {
+        extraData = { matchScore: 'Diamond' };
+      } else if (status === '⚙️ Gerar Docs') {
+        extraData = { matchScore: 'Gold' };
+      }
+    }
+
     await updateDoc(doc(db, `users/${user.uid}/applications`, id), {
       status,
+      ...extraData,
       updatedAt: new Date().toISOString()
     });
     if (selectedApp?.id === id) {
-      setSelectedApp({ ...selectedApp, status });
+      setSelectedApp({ ...selectedApp, status, ...extraData });
+    }
+  };
+
+  const [generatingQuestions, setGeneratingQuestions] = useState(false);
+  const [generatingTips, setGeneratingTips] = useState(false);
+
+  const handleGenerateInterviewTips = async () => {
+    if (!user || !selectedApp) return;
+    setGeneratingTips(true);
+    try {
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      const userData = userDoc.data();
+      const masterProfile = userData?.masterProfile || '';
+      const geminiApiKey = userData?.geminiApiKey || '';
+      const geminiModel = userData?.geminiModel || 'gemini-3.1-pro-preview';
+
+      const tips = await generateInterviewPreparation(
+        selectedApp.jobDescription, 
+        masterProfile, 
+        selectedApp.interviewNotes || '', 
+        geminiApiKey,
+        geminiModel
+      );
+      
+      await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
+        interviewSuggestions: tips,
+        updatedAt: new Date().toISOString()
+      });
+
+      setSelectedApp({ ...selectedApp, interviewSuggestions: tips });
+      setNotification({ message: 'Preparação para entrevista gerada!', type: 'success' });
+    } catch (error) {
+      console.error('Error generating tips:', error);
+      setNotification({ message: 'Erro ao gerar guia de entrevista.', type: 'error' });
+    } finally {
+      setGeneratingTips(false);
+    }
+  };
+
+  const handleGenerateQuestions = async () => {
+    if (!user || !selectedApp) return;
+    setGeneratingQuestions(true);
+    try {
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      const userData = userDoc.data();
+      const masterProfile = userData?.masterProfile || '';
+      const geminiApiKey = userData?.geminiApiKey || '';
+      const geminiModel = userData?.geminiModel || 'gemini-2.5-flash';
+
+      const questionsResult = await generateJobMatchQuestions(selectedApp.jobDescription, masterProfile, geminiApiKey, geminiModel);
+      
+      await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
+        diamondQuestions: questionsResult,
+        updatedAt: new Date().toISOString()
+      });
+
+      setSelectedApp({ ...selectedApp, diamondQuestions: questionsResult });
+      setQuestions(questionsResult);
+      setNotification({ message: 'Perguntas geradas com sucesso!', type: 'success' });
+    } catch (error) {
+      console.error('Error generating questions:', error);
+      setNotification({ message: 'Erro ao gerar perguntas.', type: 'error' });
+    } finally {
+      setGeneratingQuestions(false);
     }
   };
 
@@ -107,7 +213,7 @@ export default function Dashboard() {
 
       const analysis = await analyzeJobMatch(app.jobDescription, masterProfile, geminiApiKey, geminiModel);
       const status = analysis.tier === 'Diamond' ? '⏳ Input IA' : 
-                     analysis.tier === 'Discard' ? '🗑️ Descarte' : 
+                     analysis.tier === 'Discard' ? '⚠️ Mismatch' : 
                      '⚙️ Gerar Docs';
       
       const updatedData = {
@@ -317,6 +423,18 @@ export default function Dashboard() {
     }
   };
 
+  useEffect(() => {
+    if ((generating || generatingTips) && genStatusRef.current) {
+      genStatusRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [generating, generatingTips]);
+
+  const openDetail = (app: any) => {
+    setSelectedApp(app);
+    setIsDetailOpen(true);
+    setIsDescExpanded(false);
+  };
+
   const handleBatchGenerate = async () => {
     if (!user) return;
     
@@ -370,11 +488,19 @@ export default function Dashboard() {
       const all = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
       
       // Derive stats
+      const pendingActionStatuses = ['📥 Nova', '⏳ Input IA', '⚙️ Gerar Docs', '✅ Aplicar'];
+      const feedbackStatuses = ['📩 Triagem', '🕰️ Feedback'];
+      const closedStatuses = ['🗑️ Descarte', '❌ Rejeitada', '⚠️ Mismatch'];
+
       setStats({
-        total: all.length,
-        ready: all.filter((a: any) => a.status === '✅ Aplicar').length,
-        sent: all.filter((a: any) => a.status === '📩 Triagem').length,
-        manual: all.filter((a: any) => a.matchScore === 'Diamond').length,
+        pendingAction: all.filter((a: any) => pendingActionStatuses.includes(a.status)).length,
+        feedback: all.filter((a: any) => feedbackStatuses.includes(a.status)).length,
+        interviews: all.filter((a: any) => a.status === '🗣️ Entrevistas').length,
+        activeDiamonds: all.filter((a: any) => 
+          a.matchScore === 'Diamond' && 
+          !['❌ Rejeitada', '🗑️ Descarte', '🤝 Sucesso', '⚠️ Mismatch'].includes(a.status)
+        ).length,
+        closed: all.filter((a: any) => closedStatuses.includes(a.status)).length,
       });
 
       // Derive high priority apps (sorted by totalScore desc, limit 5)
@@ -517,7 +643,7 @@ export default function Dashboard() {
         try {
           const analysis = await analyzeJobMatch(file.content, masterProfile, geminiApiKey, userData?.geminiModel || 'gemini-2.5-flash');
           const status = analysis.tier === 'Diamond' ? '⏳ Input IA' : 
-                         analysis.tier === 'Discard' ? '🗑️ Descarte' : 
+                         analysis.tier === 'Discard' ? '⚠️ Mismatch' : 
                          '⚙️ Gerar Docs';
 
           await addDoc(collection(db, `users/${user.uid}/applications`), {
@@ -596,10 +722,11 @@ export default function Dashboard() {
   };
 
   const statCards = [
-    { name: 'Total de Vagas', value: stats.total, icon: TrendingUp, color: 'blue', filter: 'All' },
-    { name: '✅ Aplicar', value: stats.ready, icon: CheckCircle2, color: 'green', filter: '✅ Aplicar' },
-    { name: '📩 Triagem', value: stats.sent, icon: Clock, color: 'indigo', filter: '📩 Triagem' },
-    { name: 'Diamond (💎)', value: stats.manual, icon: AlertCircle, color: 'amber', filter: 'Diamond' },
+    { name: 'Ação Pendente', value: stats.pendingAction, icon: PlayCircle, color: 'blue', filter: 'Pending' },
+    { name: 'Em Triagem/Feedback', value: stats.feedback, icon: Clock, color: 'amber', filter: 'Feedback' },
+    { name: 'Em Entrevista', value: stats.interviews, icon: Users, color: 'purple', filter: '🗣️ Entrevistas' },
+    { name: 'Diamonds Ativas', value: stats.activeDiamonds, icon: Gem, color: 'cyan', filter: 'Diamond' },
+    { name: 'Fechadas / Mismatch', value: stats.closed, icon: XCircle, color: 'red', filter: 'Closed' },
   ];
 
   return (
@@ -622,7 +749,7 @@ export default function Dashboard() {
       </header>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-6">
         {statCards.map((stat, i) => (
           <motion.div
             key={stat.name}
@@ -631,7 +758,13 @@ export default function Dashboard() {
             transition={{ delay: i * 0.1 }}
             onClick={() => {
               if (stat.filter === 'Diamond') {
-                navigate(`/applications?tier=Diamond`);
+                navigate(`/applications?tier=Diamond&hideFinal=true`);
+              } else if (stat.filter === 'Pending') {
+                navigate(`/applications?status=📥 Nova,⏳ Input IA,⚙️ Gerar Docs,✅ Aplicar`);
+              } else if (stat.filter === 'Feedback') {
+                navigate(`/applications?status=📩 Triagem,🕰️ Feedback`);
+              } else if (stat.filter === 'Closed') {
+                navigate(`/applications?status=🗑️ Descarte,❌ Rejeitada,⚠️ Mismatch`);
               } else {
                 navigate(`/applications?status=${encodeURIComponent(stat.filter)}`);
               }
@@ -668,15 +801,12 @@ export default function Dashboard() {
             <div>
               <h3 className="font-bold text-lg">AI Insight</h3>
               <p className="text-blue-100 text-sm">
-                Nhaiara, notei que você tem {stats.manual} vagas de nível 💎 pendentes. O match técnico com a <b>{topMatch.company}</b> é <b>{topMatch.matchScore}</b>.
+                Nhaiara, notei que você tem {stats.activeDiamonds} vagas de nível 💎 pendentes. O match técnico com a <b>{topMatch.company}</b> é <b>{topMatch.matchScore}</b>.
               </p>
             </div>
           </div>
           <button 
-            onClick={() => {
-              setSelectedApp(topMatch);
-              setIsDetailOpen(true);
-            }}
+            onClick={() => openDetail(topMatch)}
             className="px-6 py-2 bg-white text-blue-700 rounded-xl font-bold text-sm shadow-lg hover:bg-blue-50 transition-colors whitespace-nowrap"
           >
             Ver Detalhes da Vaga
@@ -698,10 +828,7 @@ export default function Dashboard() {
               recentApps.map((app) => (
                 <div 
                   key={app.id} 
-                  onClick={() => {
-                    setSelectedApp(app);
-                    setIsDetailOpen(true);
-                  }}
+                  onClick={() => openDetail(app)}
                   className="p-6 flex items-center justify-between hover:bg-slate-50 transition-colors cursor-pointer group"
                 >
                   <div className="flex items-center gap-4">
@@ -725,17 +852,33 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div className="flex items-center gap-4">
-                    <span className={cn(
-                      "px-3 py-1 rounded-full text-[10px] font-bold border",
-                      app.status === '⏳ Input IA' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                      app.status === '⚙️ Gerar Docs' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                      app.status === '✅ Aplicar' ? 'bg-green-50 text-green-700 border-green-200' :
-                      app.status === '📩 Triagem' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' :
-                      app.status === '🗑️ Descarte' ? 'bg-red-50 text-red-700 border-red-200' :
-                      'bg-slate-50 text-slate-600 border-slate-200'
+                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity pr-4" onClick={(e) => e.stopPropagation()}>
+                      {app.status === '✅ Aplicar' && (
+                        <button 
+                          onClick={() => updateStatus(app.id, '📩 Triagem')}
+                          className="p-2 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                          title="Marcar como Aplicada"
+                        >
+                          <Send size={16} />
+                        </button>
+                      )}
+                      <button 
+                        onClick={() => setAppToDelete(app.id)}
+                        className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Descartar Vaga"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                    <div className={cn(
+                      "px-3 py-1 rounded-full text-[10px] font-bold border flex items-center gap-1.5",
+                      getStatusStyle(app.status).bg,
+                      getStatusStyle(app.status).text,
+                      getStatusStyle(app.status).border
                     )}>
+                      {getStatusStyle(app.status).icon}
                       {app.status}
-                    </span>
+                    </div>
                     <span className="text-xs text-slate-400">
                       {new Date(app.updatedAt).toLocaleDateString()}
                     </span>
@@ -844,27 +987,195 @@ export default function Dashboard() {
 
                 {/* Job Description */}
                 <div className="space-y-4">
-                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Descrição da Vaga</h4>
-                  <div className="bg-white p-6 rounded-xl border border-slate-200 text-sm text-slate-600 whitespace-pre-wrap font-mono max-h-96 overflow-y-auto">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Descrição da Vaga</h4>
+                    <button 
+                      onClick={() => setIsDescExpanded(!isDescExpanded)}
+                      className="text-xs text-blue-600 font-bold hover:underline flex items-center gap-1"
+                    >
+                      {isDescExpanded ? 'Ver menos' : 'Ver mais'}
+                      <ArrowRight size={12} className={cn("transition-transform", isDescExpanded ? "-rotate-90" : "rotate-90")} />
+                    </button>
+                  </div>
+                  <div className={cn(
+                    "bg-white p-6 rounded-xl border border-slate-200 text-sm text-slate-600 whitespace-pre-wrap font-mono transition-all duration-300 overflow-hidden relative",
+                    isDescExpanded ? "max-h-none pb-12" : "max-h-32"
+                  )}>
                     {selectedApp.jobDescription}
+                    {!isDescExpanded && (
+                      <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-white to-transparent pointer-events-none" />
+                    )}
                   </div>
                 </div>
 
-                {/* Discard Reason Section */}
-                {selectedApp.status === '🗑️ Descartada' && selectedApp.discardReason && (
+                {/* Diamond Questions Section */}
+                {selectedApp.matchScore === 'Diamond' && genStep !== 'questions' && (
+                  <div className="space-y-6 bg-amber-50/50 p-6 rounded-2xl border border-amber-100">
+                    <div className="flex items-center justify-between gap-3 mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-600">
+                          <Sparkles size={20} />
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-amber-900">Perguntas Diamond</h4>
+                          <p className="text-xs text-amber-700">Responda para capturar nuances específicas</p>
+                        </div>
+                      </div>
+                      {questions.length === 0 && (
+                        <button 
+                          onClick={handleGenerateQuestions}
+                          disabled={generatingQuestions}
+                          className="px-4 py-2 bg-amber-600 text-white text-xs font-bold rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {generatingQuestions ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                          Gerar Perguntas
+                        </button>
+                      )}
+                    </div>
+                    {questions.length > 0 ? (
+                      <div className="space-y-4">
+                        {questions.map((q, i) => (
+                          <div key={i} className="space-y-1.5">
+                            <label className="text-xs font-bold text-amber-800">{q}</label>
+                            <textarea 
+                              value={answers[q] || ''}
+                              onChange={(e) => saveAnswers({ ...answers, [q]: e.target.value })}
+                              className="w-full px-4 py-2 bg-white border border-amber-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none min-h-[80px]"
+                              placeholder="Sua resposta com dados e métricas..."
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-center py-4">
+                        <p className="text-sm text-amber-800 italic">Nenhuma pergunta gerada para este match técnico.</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Interview Preparation Section */}
+                {selectedApp.status === '🗣️ Entrevistas' && (
+                  <div className="space-y-6">
+                    <div className="bg-indigo-50/50 p-6 rounded-2xl border border-indigo-100 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600">
+                            <Clock size={20} />
+                          </div>
+                          <div>
+                            <h4 className="font-bold text-indigo-900">Preparação para Entrevista</h4>
+                            <p className="text-xs text-indigo-700">Anote detalhes do convite ou do e-mail</p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={handleGenerateInterviewTips}
+                          disabled={generatingTips || !selectedApp.interviewNotes}
+                          className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {generatingTips ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                          Gerar Guia de Preparação
+                        </button>
+                      </div>
+
+                      <textarea 
+                        value={selectedApp.interviewNotes || ''}
+                        onChange={async (e) => {
+                          const notes = e.target.value;
+                          setSelectedApp({ ...selectedApp, interviewNotes: notes });
+                          if (!user) return;
+                          await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
+                            interviewNotes: notes,
+                            updatedAt: new Date().toISOString()
+                          });
+                        }}
+                        className="w-full px-4 py-3 bg-white border border-indigo-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none min-h-[120px]"
+                        placeholder="Cole aqui o e-mail de convite, nomes dos entrevistadores, ou tópicos que você quer revisar..."
+                      />
+                    </div>
+
+                    {selectedApp.interviewSuggestions && (
+                      <div className="bg-emerald-50/50 p-6 rounded-2xl border border-emerald-100 space-y-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">
+                            <Sparkles size={20} />
+                          </div>
+                          <h4 className="font-bold text-emerald-900">Guia de Preparação (IA)</h4>
+                        </div>
+                        <div className="prose prose-sm max-w-none prose-emerald bg-white p-6 rounded-xl border border-emerald-100">
+                          <Markdown>{selectedApp.interviewSuggestions}</Markdown>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Discard / Rejection / Mismatch Reason Section */}
+                {['🗑️ Descarte', '❌ Rejeitada', '⚠️ Mismatch'].includes(selectedApp.status) && (
                   <div className="space-y-4">
-                    <h4 className="text-sm font-bold text-red-600 uppercase tracking-wider">Motivo do Descarte</h4>
+                    <h4 className="text-sm font-bold text-red-600 uppercase tracking-wider">Anotações (Motivo)</h4>
                     <div className="bg-red-50 p-6 rounded-xl border border-red-100 text-sm text-red-900">
-                      {selectedApp.discardReason}
+                      <textarea 
+                        value={selectedApp.discardReason || ''}
+                        onChange={async (e) => {
+                          const newReason = e.target.value;
+                          setSelectedApp({ ...selectedApp, discardReason: newReason });
+                          if (!user) return;
+                          await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
+                            discardReason: newReason,
+                            updatedAt: new Date().toISOString()
+                          });
+                        }}
+                        placeholder="Anote aqui o motivo da rejeição, descarte ou observações sobre o mismatch..."
+                        className="w-full bg-transparent outline-none min-h-[100px] resize-none"
+                      />
                     </div>
                   </div>
                 )}
 
-                {/* Automation Section */}
-                {generating && (
-                  <div ref={genStatusRef} className="bg-blue-50 p-4 rounded-xl border border-blue-100 flex items-center gap-3 animate-pulse">
-                    <Loader2 className="animate-spin text-blue-600" size={20} />
-                    <span className="text-sm font-medium text-blue-700">{genStatus}</span>
+                {/* Diamond Questions Section */}
+                {selectedApp.matchScore === 'Diamond' && genStep !== 'questions' && (
+                  <div className="space-y-6 bg-amber-50/50 p-6 rounded-2xl border border-amber-100">
+                    <div className="flex items-center justify-between gap-3 mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-600">
+                          <Sparkles size={20} />
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-amber-900">Perguntas Diamond</h4>
+                          <p className="text-xs text-amber-700">Responda para capturar nuances específicas</p>
+                        </div>
+                      </div>
+                      {questions.length === 0 && (
+                        <button 
+                          onClick={handleGenerateQuestions}
+                          disabled={generatingQuestions}
+                          className="px-4 py-2 bg-amber-600 text-white text-xs font-bold rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {generatingQuestions ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                          Gerar Perguntas
+                        </button>
+                      )}
+                    </div>
+                    {questions.length > 0 ? (
+                      <div className="space-y-4">
+                        {questions.map((q, i) => (
+                          <div key={i} className="space-y-1.5">
+                            <label className="text-xs font-bold text-amber-800">{q}</label>
+                            <textarea 
+                              value={answers[q] || ''}
+                              onChange={(e) => saveAnswers({ ...answers, [q]: e.target.value })}
+                              className="w-full px-4 py-2 bg-white border border-amber-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none min-h-[80px]"
+                              placeholder="Sua resposta com dados e métricas..."
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-center py-4">
+                        <p className="text-sm text-amber-800 italic">Nenhuma pergunta gerada para este match técnico.</p>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -910,31 +1221,37 @@ export default function Dashboard() {
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Status Atual:</span>
-                        <select 
-                          value={selectedApp.status}
-                          onChange={(e) => updateStatus(selectedApp.id, e.target.value)}
-                          className={cn(
-                            "text-[10px] font-bold px-2 py-1 rounded-full border outline-none cursor-pointer appearance-none text-center min-w-[120px]",
-                            selectedApp.status === '⏳ Input IA' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                            selectedApp.status === '⚙️ Gerar Docs' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                            selectedApp.status === '✅ Aplicar' ? 'bg-green-50 text-green-700 border-green-200' :
-                            selectedApp.status === '📩 Triagem' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' :
-                            selectedApp.status === '🗑️ Descarte' ? 'bg-red-50 text-red-700 border-red-200' :
-                            'bg-slate-50 text-slate-600 border-slate-200'
-                          )}
-                        >
-                          <option value="📥 Nova">📥 Nova</option>
-                          <option value="⏳ Input IA">⏳ Input IA</option>
-                          <option value="⚙️ Gerar Docs">⚙️ Gerar Docs</option>
-                          <option value="✅ Aplicar">✅ Aplicar</option>
-                          <option value="📩 Triagem">📩 Triagem</option>
-                          <option value="🕰️ Feedback">🕰️ Feedback</option>
-                          <option value="🗣️ Entrevistas">🗣️ Entrevistas</option>
-                          <option value="🏆 Proposta">🏆 Proposta</option>
-                          <option value="🤝 Sucesso">🤝 Sucesso</option>
-                          <option value="❌ Rejeitada">❌ Rejeitada</option>
-                          <option value="🗑️ Descarte">🗑️ Descarte</option>
-                        </select>
+                        <div className="relative">
+                          <select 
+                            value={selectedApp.status}
+                            onChange={(e) => updateStatus(selectedApp.id, e.target.value)}
+                            className={cn(
+                              "text-[10px] font-bold px-3 py-1.5 rounded-full border outline-none cursor-pointer appearance-none text-center min-w-[140px] transition-colors pr-8",
+                              getStatusStyle(selectedApp.status).bg,
+                              getStatusStyle(selectedApp.status).text,
+                              getStatusStyle(selectedApp.status).border
+                            )}
+                          >
+                            <option value="📥 Nova">📥 Nova</option>
+                            <option value="⏳ Input IA">⏳ Input IA</option>
+                            <option value="⚙️ Gerar Docs">⚙️ Gerar Docs</option>
+                            <option value="✅ Aplicar">✅ Aplicar</option>
+                            <option value="📩 Triagem">📩 Triagem</option>
+                            <option value="🕰️ Feedback">🕰️ Feedback</option>
+                            <option value="🗣️ Entrevistas">🗣️ Entrevistas</option>
+                            <option value="🏆 Proposta">🏆 Proposta</option>
+                            <option value="🤝 Sucesso">🤝 Sucesso</option>
+                            <option value="⚠️ Mismatch">⚠️ Mismatch</option>
+                            <option value="❌ Rejeitada">❌ Rejeitada</option>
+                            <option value="🗑️ Descarte">🗑️ Descarte</option>
+                          </select>
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none opacity-50">
+                            <ChevronDown size={10} className={getStatusStyle(selectedApp.status).text} />
+                          </div>
+                          <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
+                            {getStatusStyle(selectedApp.status).icon}
+                          </div>
+                        </div>
                       </div>
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Link Pasta Drive:</span>
@@ -987,6 +1304,24 @@ export default function Dashboard() {
                     </div>
                   </div>
                 </div>
+
+                {/* Automation Section */}
+                <div id="gen-progress-dashboard" className="pt-4 pb-8">
+                  {(generating || generatingTips) && (
+                    <div ref={genStatusRef} className="bg-blue-50 p-4 rounded-xl border border-blue-100 flex items-center gap-3 animate-pulse">
+                      <Loader2 className="animate-spin text-blue-600" size={20} />
+                      <span className="text-sm font-medium text-blue-700">
+                        {generating ? genStatus : 'Gerando guia de preparação para entrevista...'}
+                      </span>
+                    </div>
+                  )}
+                  {syncing && (
+                    <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 flex items-center gap-3 animate-pulse mt-2">
+                      <Loader2 className="animate-spin text-amber-600" size={20} />
+                      <span className="text-sm font-medium text-amber-700">Sincronizando/Analisando com Gemini...</span>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-between items-center">
@@ -1032,7 +1367,7 @@ export default function Dashboard() {
                           <Send size={18} />
                           Marcar como Aplicada
                         </button>
-                      ) : genStep === 'idle' && (
+                      ) : genStep === 'idle' && ['📥 Nova', '⏳ Input IA', '⚙️ Gerar Docs'].includes(selectedApp.status) && (
                         <button 
                           onClick={handleGenerateApplication}
                           disabled={generating}
@@ -1052,7 +1387,7 @@ export default function Dashboard() {
                         </button>
                       )}
 
-                      {selectedApp.link && (
+                      {selectedApp.link && selectedApp.status === '✅ Aplicar' && (
                         <a 
                           href={selectedApp.link}
                           target="_blank"

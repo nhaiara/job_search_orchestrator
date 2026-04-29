@@ -11,8 +11,11 @@ import {
   generateDiamond,
   generateGold,
   generateSilver,
-  updateMasterProfileWithLearnings
+  updateMasterProfileWithLearnings,
+  generateJobMatchQuestions,
+  generateInterviewPreparation
 } from '../lib/gemini';
+import { getStatusStyle, getTierStyle } from '../lib/styleUtils';
 import { 
   Search, 
   Filter, 
@@ -33,13 +36,26 @@ import {
   Sparkles,
   Send,
   Loader2,
-  TrendingUp
+  TrendingUp,
+  ArrowDownNarrowWide,
+  PlusCircle,
+  Brain,
+  Star,
+  Gem,
+  Award,
+  Trophy,
+  Handshake,
+  AlertTriangle,
+  Users,
+  ChevronDown
 } from 'lucide-react';
 
 const CV_LEVEL_3_ID = '1eCyJTG_IItfwzk3EBzRGCvTX1sT7g49UaD-x8gGC0rE';
 const CV_LEVEL_1_2_ID = '11Icr9xJSx-Dr8piplsltIai9oOeu2qdh-qIqAaiRQS4';
 const OUTPUT_FOLDER_ID = '1VLI8Lhz6CVhkPRKhwI64ArfzoIwkLork';
 const PROCESSED_FOLDER_ID = '1kjYwJliWojpWm0TfbGDeTp3-9foVES8_';
+
+import Markdown from 'react-markdown';
 
 export default function Applications() {
   const { user } = useAuth();
@@ -49,6 +65,7 @@ export default function Applications() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedApp, setSelectedApp] = useState<any>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
+  const [isDescExpanded, setIsDescExpanded] = useState(false);
   const [appToDelete, setAppToDelete] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
@@ -64,17 +81,99 @@ export default function Applications() {
     const saved = localStorage.getItem('google_drive_tokens');
     return saved ? JSON.parse(saved) : null;
   });
+
+  const [generatingQuestions, setGeneratingQuestions] = useState(false);
+  const [generatingTips, setGeneratingTips] = useState(false);
+
+  useEffect(() => {
+    if ((generating || generatingTips) && genStatusRef.current) {
+      genStatusRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [generating, generatingTips]);
+
+  const openDetail = (app: any) => {
+    setSelectedApp(app);
+    setIsDetailOpen(true);
+    setIsDescExpanded(false);
+  };
+
+  const handleGenerateInterviewTips = async () => {
+    if (!user || !selectedApp) return;
+    setGeneratingTips(true);
+    try {
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      const userData = userDoc.data();
+      const masterProfile = userData?.masterProfile || '';
+      const geminiApiKey = userData?.geminiApiKey || '';
+      const geminiModel = userData?.geminiModel || 'gemini-3.1-pro-preview';
+
+      const tips = await generateInterviewPreparation(
+        selectedApp.jobDescription, 
+        masterProfile, 
+        selectedApp.interviewNotes || '', 
+        geminiApiKey,
+        geminiModel
+      );
+      
+      await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
+        interviewSuggestions: tips,
+        updatedAt: new Date().toISOString()
+      });
+
+      setSelectedApp({ ...selectedApp, interviewSuggestions: tips });
+      setNotification({ message: 'Preparação para entrevista gerada!', type: 'success' });
+    } catch (error) {
+      console.error('Error generating tips:', error);
+      setNotification({ message: 'Erro ao gerar guia de entrevista.', type: 'error' });
+    } finally {
+      setGeneratingTips(false);
+    }
+  };
+
+  const handleGenerateQuestions = async () => {
+    if (!user || !selectedApp) return;
+    setGeneratingQuestions(true);
+    try {
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      const userData = userDoc.data();
+      const masterProfile = userData?.masterProfile || '';
+      const geminiApiKey = userData?.geminiApiKey || '';
+      const geminiModel = userData?.geminiModel || 'gemini-2.5-flash';
+
+      const questionsResult = await generateJobMatchQuestions(selectedApp.jobDescription, masterProfile, geminiApiKey, geminiModel);
+      
+      await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
+        diamondQuestions: questionsResult,
+        updatedAt: new Date().toISOString()
+      });
+
+      setSelectedApp({ ...selectedApp, diamondQuestions: questionsResult });
+      setQuestions(questionsResult);
+      setNotification({ message: 'Perguntas geradas com sucesso!', type: 'success' });
+    } catch (error) {
+      console.error('Error generating questions:', error);
+      setNotification({ message: 'Erro ao gerar perguntas.', type: 'error' });
+    } finally {
+      setGeneratingQuestions(false);
+    }
+  };
+
   const [questions, setQuestions] = useState<string[]>([]);
   const [answers, setAnswers] = useState<{[key: string]: string}>({});
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<string>(searchParams.get('status') || 'All');
   const [filterTier, setFilterTier] = useState<string>(searchParams.get('tier') || 'All');
+  const [hideFinal, setHideFinal] = useState<boolean>(searchParams.get('hideFinal') === 'true');
+  const [sortBy, setBy] = useState<'totalScore' | 'status' | 'role' | 'company'>('totalScore');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
 
   useEffect(() => {
     const status = searchParams.get('status');
     const tier = searchParams.get('tier');
+    const hf = searchParams.get('hideFinal');
     if (status) setFilterStatus(status);
     if (tier) setFilterTier(tier);
+    if (hf) setHideFinal(hf === 'true');
   }, [searchParams]);
   const [isDiscardModalOpen, setIsDiscardModalOpen] = useState(false);
   const [discardingAppId, setDiscardingAppId] = useState<string | null>(null);
@@ -266,7 +365,7 @@ export default function Applications() {
           const geminiModel = userData?.geminiModel || 'gemini-2.5-flash';
           const analysis = await analyzeJobMatch(file.content, masterProfile, geminiApiKey, geminiModel);
           const status = analysis.tier === 'Diamond' ? '⏳ Input IA' : 
-                         analysis.tier === 'Discard' ? '🗑️ Descarte' : 
+                         analysis.tier === 'Discard' ? '⚠️ Mismatch' : 
                          '⚙️ Gerar Docs';
 
           // Save
@@ -570,7 +669,7 @@ export default function Applications() {
       // 2. Analyze with AI (Frontend)
       const analysis = await analyzeJobMatch(newApp.jobDescription, masterProfile, geminiApiKey, geminiModel);
       const status = analysis.tier === 'Diamond' ? '⏳ Input IA' : 
-                     analysis.tier === 'Discard' ? '🗑️ Descarte' : 
+                     analysis.tier === 'Discard' ? '⚠️ Mismatch' : 
                      '⚙️ Gerar Docs';
 
       // 3. Save to Firestore
@@ -613,13 +712,26 @@ export default function Applications() {
       return;
     }
 
+    const appToUpdate = apps.find(a => a.id === id);
+    let extraData = {};
+
+    // Se o usuário está tirando do descarte para o processamento, precisamos dar um "tier" para a vaga
+    if (appToUpdate?.matchScore === 'Discard' || !appToUpdate?.matchScore) {
+      if (status === '⏳ Input IA') {
+        extraData = { matchScore: 'Diamond' };
+      } else if (status === '⚙️ Gerar Docs') {
+        extraData = { matchScore: 'Gold' };
+      }
+    }
+
     await updateDoc(doc(db, `users/${user.uid}/applications`, id), {
       status,
+      ...extraData,
       updatedAt: new Date().toISOString()
     });
 
     if (selectedApp?.id === id) {
-      setSelectedApp({ ...selectedApp, status });
+      setSelectedApp({ ...selectedApp, status, ...extraData });
     }
   };
 
@@ -662,13 +774,12 @@ export default function Applications() {
   const handleReanalyzeApp = async (app: any) => {
     if (!user) return;
 
-    // Protection check: Don't reanalyze final states or manual discards
-    const isFinalState = ['✅ Aplicar', '📩 Triagem', '🗣️ Entrevistas', '🕰️ Feedback', '❌ Rejeitada'].includes(app.status);
-    const isManualDiscard = app.status === '🗑️ Descarte' && app.discardReason;
+    // Protection check: Don't reanalyze final states
+    const isFinalState = ['✅ Aplicar', '📩 Triagem', '🗣️ Entrevistas', '🕰️ Feedback', '❌ Rejeitada', '🤝 Sucesso'].includes(app.status);
 
-    if (isFinalState || isManualDiscard) {
+    if (isFinalState) {
       setNotification({ 
-        message: 'Esta vaga está em um estado final ou foi descartada manualmente e não pode ser reanalisada.', 
+        message: 'Esta vaga está em um estado avançado (aplicada ou concluída) e não deve ser reanalisada.', 
         type: 'error' 
       });
       return;
@@ -686,7 +797,7 @@ export default function Applications() {
 
       const analysis = await analyzeJobMatch(app.jobDescription, masterProfile, geminiApiKey, geminiModel);
       const status = analysis.tier === 'Diamond' ? '⏳ Input IA' : 
-                     analysis.tier === 'Discard' ? '🗑️ Descarte' : 
+                     analysis.tier === 'Discard' ? '⚠️ Mismatch' : 
                      '⚙️ Gerar Docs';
       
       const updatedData = {
@@ -718,16 +829,57 @@ export default function Applications() {
     }
   };
 
-  const filteredApps = apps.filter(app => {
-    const matchesSearch = 
-      app.company?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      app.role?.toLowerCase().includes(searchTerm.toLowerCase());
-    
-    const matchesStatus = filterStatus === 'All' || app.status === filterStatus;
-    const matchesTier = filterTier === 'All' || app.matchScore === filterTier;
-    
-    return matchesSearch && matchesStatus && matchesTier;
-  });
+  const sortedApps = [...apps]
+    .filter(app => {
+      const matchesSearch = 
+        app.company?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        app.role?.toLowerCase().includes(searchTerm.toLowerCase());
+      
+      const statusList = filterStatus === 'Pending' ? ['📥 Nova', '⏳ Input IA', '⚙️ Gerar Docs', '✅ Aplicar'] :
+                        filterStatus === 'Feedback' ? ['📩 Triagem', '🕰️ Feedback'] :
+                        filterStatus === 'Closed' ? ['🗑️ Descarte', '❌ Rejeitada', '⚠️ Mismatch'] :
+                        filterStatus !== 'All' ? filterStatus.split(',') : [];
+
+      const matchesStatus = filterStatus === 'All' ? true : statusList.includes(app.status);
+      const matchesTier = filterTier === 'All' || app.matchScore === filterTier;
+      
+      // Hide final statuses if hideFinal is active
+      const matchesHideFinal = !hideFinal || !['❌ Rejeitada', '🗑️ Descarte', '⚠️ Mismatch', '🤝 Sucesso'].includes(app.status);
+      
+      return matchesSearch && matchesStatus && matchesTier && matchesHideFinal;
+    })
+    .sort((a, b) => {
+      const factor = sortOrder === 'desc' ? -1 : 1;
+
+      if (sortBy === 'totalScore') {
+        return ((a.totalScore || 0) - (b.totalScore || 0)) * factor;
+      }
+
+      if (sortBy === 'status') {
+        const STATUS_PRIORITY: Record<string, number> = {
+          '📥 Nova': 1,
+          '⏳ Input IA': 2,
+          '⚙️ Gerar Docs': 3,
+          '✅ Aplicar': 4,
+          '📩 Triagem': 5,
+          '🕰️ Feedback': 6,
+          '🗣️ Entrevistas': 7,
+          '🏆 Proposta': 8,
+          '🤝 Sucesso': 9,
+          '⚠️ Mismatch': 10,
+          '❌ Rejeitada': 11,
+          '🗑️ Descarte': 12
+        };
+        const p1 = STATUS_PRIORITY[a.status] || 99;
+        const p2 = STATUS_PRIORITY[b.status] || 99;
+        return (p1 - p2) * (sortOrder === 'desc' ? -1 : 1);
+      }
+
+      const valA = String(a[sortBy] || '').toLowerCase();
+      const valB = String(b[sortBy] || '').toLowerCase();
+      
+      return valA.localeCompare(valB) * factor;
+    });
 
   return (
     <div className="space-y-8">
@@ -787,6 +939,9 @@ export default function Applications() {
             className="flex-1 md:flex-none px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors outline-none bg-white"
           >
             <option value="All">Todos os Status</option>
+            <option value="Pending">⚡ Ação Pendente</option>
+            <option value="Feedback">🕰️ Triagem/Feedback</option>
+            <option value="Closed">🛑 Fechadas/Mismatch</option>
             <option value="📥 Nova">📥 Nova</option>
             <option value="⏳ Input IA">⏳ Input IA</option>
             <option value="⚙️ Gerar Docs">⚙️ Gerar Docs</option>
@@ -796,6 +951,7 @@ export default function Applications() {
             <option value="🗣️ Entrevistas">🗣️ Entrevistas</option>
             <option value="🏆 Proposta">🏆 Proposta</option>
             <option value="🤝 Sucesso">🤝 Sucesso</option>
+            <option value="⚠️ Mismatch">⚠️ Mismatch</option>
             <option value="❌ Rejeitada">❌ Rejeitada</option>
             <option value="🗑️ Descarte">🗑️ Descarte</option>
           </select>
@@ -806,10 +962,41 @@ export default function Applications() {
           >
             <option value="All">Todos os Tiers</option>
             <option value="Diamond">💎 Diamond</option>
-            <option value="Gold">🥇 Gold</option>
+            <option value="Gold">⭐ Gold</option>
             <option value="Silver">🥈 Silver</option>
             <option value="Discard">🗑️ Discard</option>
           </select>
+          <div className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-lg bg-white">
+            <input 
+              id="hideFinal"
+              type="checkbox" 
+              checked={hideFinal} 
+              onChange={(e) => setHideFinal(e.target.checked)}
+              className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
+            />
+            <label htmlFor="hideFinal" className="text-xs font-medium text-slate-600 cursor-pointer select-none">
+              No 🗑️/❌
+            </label>
+          </div>
+          <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-lg border border-slate-200">
+            <select 
+              value={sortBy}
+              onChange={(e) => setBy(e.target.value as any)}
+              className="px-3 py-1 bg-transparent text-xs font-bold text-slate-600 outline-none cursor-pointer"
+            >
+              <option value="totalScore">Match (%)</option>
+              <option value="status">Status</option>
+              <option value="company">Empresa</option>
+              <option value="role">Cargo</option>
+            </select>
+            <button 
+              onClick={() => setSortOrder(prev => prev === 'desc' ? 'asc' : 'desc')}
+              className="p-1 hover:bg-slate-200 rounded text-slate-500 transition-colors"
+              title={sortOrder === 'desc' ? "Ordem Decrescente" : "Ordem Crescente"}
+            >
+              <ArrowDownNarrowWide size={14} className={sortOrder === 'asc' ? 'rotate-180 transition-transform' : 'transition-transform'} />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -829,19 +1016,16 @@ export default function Applications() {
                 <tr>
                   <td colSpan={4} className="px-6 py-12 text-center text-slate-400">Carregando aplicações...</td>
                 </tr>
-              ) : filteredApps.length === 0 ? (
+              ) : sortedApps.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-6 py-12 text-center text-slate-400">Nenhuma vaga encontrada.</td>
                 </tr>
               ) : (
-                filteredApps.map((app) => (
+                sortedApps.map((app) => (
                   <tr 
                     key={app.id} 
                     className="hover:bg-slate-50/50 transition-colors group cursor-pointer"
-                    onClick={() => {
-                      setSelectedApp(app);
-                      setIsDetailOpen(true);
-                    }}
+                    onClick={() => openDetail(app)}
                   >
                     <td className="px-6 py-4">
                       <div className="space-y-2">
@@ -853,15 +1037,15 @@ export default function Applications() {
                             </div>
                           </div>
                           <div className="flex flex-col items-end gap-1">
-                            <span className={cn(
-                              "text-[10px] font-bold px-2 py-0.5 rounded",
-                              app.matchScore === 'Diamond' ? 'bg-amber-100 text-amber-800' :
-                              app.matchScore === 'Gold' ? 'bg-blue-100 text-blue-800' :
-                              app.matchScore === 'Silver' ? 'bg-slate-100 text-slate-800' :
-                              'bg-red-100 text-red-800'
+                            <div className={cn(
+                              "px-2 py-0.5 rounded text-[10px] font-bold border flex items-center gap-1",
+                              getTierStyle(app.matchScore).bg,
+                              getTierStyle(app.matchScore).text,
+                              getTierStyle(app.matchScore).border
                             )}>
+                              {getTierStyle(app.matchScore).icon}
                               {app.matchScore} ({app.totalScore}%)
-                            </span>
+                            </div>
                             <div className="text-[9px] text-slate-400 font-medium">
                               {app.goldenPillar || '-'}
                             </div>
@@ -890,31 +1074,37 @@ export default function Applications() {
                     </td>
                     <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
                       <div className="flex flex-col gap-2">
-                        <select 
-                          value={app.status}
-                          onChange={(e) => updateStatus(app.id, e.target.value)}
-                          className={cn(
-                            "text-[10px] font-bold px-2 py-1 rounded-full border outline-none cursor-pointer appearance-none text-center min-w-[90px]",
-                            app.status === '⏳ Input IA' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                            app.status === '⚙️ Gerar Docs' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                            app.status === '✅ Aplicar' ? 'bg-green-50 text-green-700 border-green-200' :
-                            app.status === '📩 Triagem' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' :
-                            app.status === '🗑️ Descarte' ? 'bg-red-50 text-red-700 border-red-200' :
-                            'bg-slate-50 text-slate-600 border-slate-200'
-                          )}
-                        >
-                          <option value="📥 Nova">📥 Nova</option>
-                          <option value="⏳ Input IA">⏳ Input IA</option>
-                          <option value="⚙️ Gerar Docs">⚙️ Gerar Docs</option>
-                          <option value="✅ Aplicar">✅ Aplicar</option>
-                          <option value="📩 Triagem">📩 Triagem</option>
-                          <option value="🕰️ Feedback">🕰️ Feedback</option>
-                          <option value="🗣️ Entrevistas">🗣️ Entrevistas</option>
-                          <option value="🏆 Proposta">🏆 Proposta</option>
-                          <option value="🤝 Sucesso">🤝 Sucesso</option>
-                          <option value="❌ Rejeitada">❌ Rejeitada</option>
-                          <option value="🗑️ Descarte">🗑️ Descarte</option>
-                        </select>
+                        <div className="relative">
+                          <select 
+                            value={app.status}
+                            onChange={(e) => updateStatus(app.id, e.target.value)}
+                            className={cn(
+                              "text-[10px] font-bold px-3 py-1 pb-1.5 rounded-full border outline-none cursor-pointer appearance-none text-center min-w-[130px] transition-colors pr-8",
+                              getStatusStyle(app.status).bg,
+                              getStatusStyle(app.status).text,
+                              getStatusStyle(app.status).border
+                            )}
+                          >
+                            <option value="📥 Nova">📥 Nova</option>
+                            <option value="⏳ Input IA">⏳ Input IA</option>
+                            <option value="⚙️ Gerar Docs">⚙️ Gerar Docs</option>
+                            <option value="✅ Aplicar">✅ Aplicar</option>
+                            <option value="📩 Triagem">📩 Triagem</option>
+                            <option value="🕰️ Feedback">🕰️ Feedback</option>
+                            <option value="🗣️ Entrevistas">🗣️ Entrevistas</option>
+                            <option value="🏆 Proposta">🏆 Proposta</option>
+                            <option value="🤝 Sucesso">🤝 Sucesso</option>
+                            <option value="⚠️ Mismatch">⚠️ Mismatch</option>
+                            <option value="❌ Rejeitada">❌ Rejeitada</option>
+                            <option value="🗑️ Descarte">🗑️ Descarte</option>
+                          </select>
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none opacity-50">
+                            <ChevronDown size={10} className={getStatusStyle(app.status).text} />
+                          </div>
+                          <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
+                            {getStatusStyle(app.status).icon}
+                          </div>
+                        </div>
                         {app.driveFolderLink && (
                           <a 
                             href={app.driveFolderLink} 
@@ -929,15 +1119,22 @@ export default function Applications() {
                     </td>
                     <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {app.status === '✅ Aplicar' && (
+                          <button 
+                            onClick={() => updateStatus(app.id, '📩 Triagem')}
+                            className="p-2 text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                            title="Marcar como Aplicada"
+                          >
+                            <Send size={16} />
+                          </button>
+                        )}
                         <button 
                           onClick={() => handleReanalyzeApp(app)}
-                          disabled={syncing || ['✅ Pronto', 'Enviada', 'Entrevista', 'Aguardando feedback', 'Rejeitada'].includes(app.status) || (app.status === '🗑️ Descartada' && app.discardReason)}
+                          disabled={syncing || ['📩 Triagem', '🕰️ Feedback', '🗣️ Entrevistas', '🏆 Proposta', '🤝 Sucesso', '❌ Rejeitada'].includes(app.status)}
                           title={
-                            ['✅ Pronto', 'Enviada', 'Entrevista', 'Aguardando feedback', 'Rejeitada'].includes(app.status) 
-                              ? "Vaga em estado final não permite reanálise" 
-                              : (app.status === '🗑️ Descartada' && app.discardReason)
-                                ? "Vaga descartada manualmente não permite reanálise"
-                                : "Refazer análise de match"
+                            ['📩 Triagem', '🕰️ Feedback', '🗣️ Entrevistas', '🏆 Proposta', '🤝 Sucesso', '❌ Rejeitada'].includes(app.status) 
+                              ? "Vaga em estado avançado não permite reanálise" 
+                              : "Refazer análise de match"
                           }
                           className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors disabled:opacity-20"
                         >
@@ -946,6 +1143,7 @@ export default function Applications() {
                         <button 
                           onClick={() => setAppToDelete(app.id)}
                           className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          title="Excluir Vaga"
                         >
                           <Trash2 size={16} />
                         </button>
@@ -1192,14 +1390,15 @@ export default function Applications() {
                 <div>
                   <div className="flex items-center gap-3 mb-1">
                     <h3 className="text-2xl font-bold text-slate-900">{selectedApp.role}</h3>
-                    <span className={cn(
-                      "text-xs font-bold px-2 py-1 rounded-full border",
-                      selectedApp.matchScore === 'Altíssima' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' :
-                      selectedApp.matchScore === 'Alta' ? 'bg-blue-50 text-blue-700 border-blue-100' :
-                      'bg-slate-50 text-slate-700 border-slate-100'
+                    <div className={cn(
+                      "text-xs font-bold px-3 py-1 rounded-full border flex items-center gap-2",
+                      getTierStyle(selectedApp.matchScore).bg,
+                      getTierStyle(selectedApp.matchScore).text,
+                      getTierStyle(selectedApp.matchScore).border
                     )}>
+                      {getTierStyle(selectedApp.matchScore).icon}
                       {selectedApp.matchScore} Match
-                    </span>
+                    </div>
                   </div>
                   <p className="text-slate-500 font-medium">{selectedApp.company} • {selectedApp.location}</p>
                 </div>
@@ -1238,44 +1437,133 @@ export default function Applications() {
 
                 {/* Job Description */}
                 <div className="space-y-4">
-                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Descrição da Vaga</h4>
-                  <div className="bg-white p-6 rounded-xl border border-slate-200 text-sm text-slate-600 whitespace-pre-wrap font-mono max-h-96 overflow-y-auto">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Descrição da Vaga</h4>
+                    <button 
+                      onClick={() => setIsDescExpanded(!isDescExpanded)}
+                      className="text-xs text-blue-600 font-bold hover:underline flex items-center gap-1"
+                    >
+                      {isDescExpanded ? 'Ver menos' : 'Ver mais'}
+                      <ChevronRight size={12} className={cn("transition-transform", isDescExpanded ? "-rotate-90" : "rotate-90")} />
+                    </button>
+                  </div>
+                  <div className={cn(
+                    "bg-white p-6 rounded-xl border border-slate-200 text-sm text-slate-600 whitespace-pre-wrap font-mono transition-all duration-300 overflow-hidden relative",
+                    isDescExpanded ? "max-h-none pb-12" : "max-h-32"
+                  )}>
                     {selectedApp.jobDescription}
+                    {!isDescExpanded && (
+                      <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-white to-transparent pointer-events-none" />
+                    )}
                   </div>
                 </div>
 
                 {/* Diamond Questions Section */}
-                {selectedApp.matchScore === 'Diamond' && questions.length > 0 && (
+                {selectedApp.matchScore === 'Diamond' && (
                   <div className="space-y-6 bg-amber-50/50 p-6 rounded-2xl border border-amber-100">
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-600">
-                        <Sparkles size={20} />
-                      </div>
-                      <div>
-                        <h4 className="font-bold text-amber-900">Perguntas Diamond</h4>
-                        <p className="text-xs text-amber-700">Responda para capturar nuances específicas para os documentos</p>
-                      </div>
-                    </div>
-                    <div className="space-y-4">
-                      {questions.map((q, i) => (
-                        <div key={i} className="space-y-1.5">
-                          <label className="text-xs font-bold text-amber-800">{q}</label>
-                          <textarea 
-                            value={answers[q] || ''}
-                            onChange={(e) => saveAnswers({ ...answers, [q]: e.target.value })}
-                            className="w-full px-4 py-2 bg-white border border-amber-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none min-h-[80px]"
-                            placeholder="Sua resposta com dados e métricas..."
-                          />
+                    <div className="flex items-center justify-between gap-3 mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-600">
+                          <Sparkles size={20} />
                         </div>
-                      ))}
+                        <div>
+                          <h4 className="font-bold text-amber-900">Perguntas Diamond</h4>
+                          <p className="text-xs text-amber-700">Responda para capturar nuances específicas para os documentos</p>
+                        </div>
+                      </div>
+                      {questions.length === 0 && (
+                        <button 
+                          onClick={handleGenerateQuestions}
+                          disabled={generatingQuestions}
+                          className="px-4 py-2 bg-amber-600 text-white text-xs font-bold rounded-lg hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {generatingQuestions ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                          Gerar Perguntas
+                        </button>
+                      )}
                     </div>
+                    {questions.length > 0 ? (
+                      <div className="space-y-4">
+                        {questions.map((q, i) => (
+                          <div key={i} className="space-y-1.5">
+                            <label className="text-xs font-bold text-amber-800">{q}</label>
+                            <textarea 
+                              value={answers[q] || ''}
+                              onChange={(e) => saveAnswers({ ...answers, [q]: e.target.value })}
+                              className="w-full px-4 py-2 bg-white border border-amber-200 rounded-lg text-sm focus:ring-2 focus:ring-amber-500 outline-none min-h-[80px]"
+                              placeholder="Sua resposta com dados e métricas..."
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-center py-4">
+                        <p className="text-sm text-amber-800 italic">Nenhuma pergunta gerada para este match técnico.</p>
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {/* Discard Reason Section */}
-                {selectedApp.status === '🗑️ Descarte' && (
+                {/* Interview Preparation Section */}
+                {selectedApp.status === '🗣️ Entrevistas' && (
+                  <div className="space-y-6">
+                    <div className="bg-indigo-50/50 p-6 rounded-2xl border border-indigo-100 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600">
+                            <Clock size={20} />
+                          </div>
+                          <div>
+                            <h4 className="font-bold text-indigo-900">Preparação para Entrevista</h4>
+                            <p className="text-xs text-indigo-700">Anote detalhes do convite ou do e-mail</p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={handleGenerateInterviewTips}
+                          disabled={generatingTips || !selectedApp.interviewNotes}
+                          className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded-lg hover:bg-indigo-700 transition-colors flex items-center gap-2 disabled:opacity-50"
+                        >
+                          {generatingTips ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                          Gerar Guia de Preparação
+                        </button>
+                      </div>
+
+                      <textarea 
+                        value={selectedApp.interviewNotes || ''}
+                        onChange={async (e) => {
+                          const notes = e.target.value;
+                          setSelectedApp({ ...selectedApp, interviewNotes: notes });
+                          if (!user) return;
+                          await updateDoc(doc(db, `users/${user.uid}/applications`, selectedApp.id), {
+                            interviewNotes: notes,
+                            updatedAt: new Date().toISOString()
+                          });
+                        }}
+                        className="w-full px-4 py-3 bg-white border border-indigo-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 outline-none min-h-[120px]"
+                        placeholder="Cole aqui o e-mail de convite, nomes dos entrevistadores, ou tópicos que você quer revisar..."
+                      />
+                    </div>
+
+                    {selectedApp.interviewSuggestions && (
+                      <div className="bg-emerald-50/50 p-6 rounded-2xl border border-emerald-100 space-y-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600">
+                            <Sparkles size={20} />
+                          </div>
+                          <h4 className="font-bold text-emerald-900">Guia de Preparação (IA)</h4>
+                        </div>
+                        <div className="prose prose-sm max-w-none prose-emerald bg-white p-6 rounded-xl border border-emerald-100">
+                          <Markdown>{selectedApp.interviewSuggestions}</Markdown>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Discard / Rejection / Mismatch Reason Section */}
+                {['🗑️ Descarte', '❌ Rejeitada', '⚠️ Mismatch'].includes(selectedApp.status) && (
                   <div className="space-y-4">
-                    <h4 className="text-sm font-bold text-red-600 uppercase tracking-wider">Motivo do Descarte</h4>
+                    <h4 className="text-sm font-bold text-red-600 uppercase tracking-wider">Anotações (Motivo)</h4>
                     <div className="bg-red-50 p-6 rounded-xl border border-red-100">
                       <textarea 
                         value={selectedApp.discardReason || ''}
@@ -1288,7 +1576,7 @@ export default function Applications() {
                             updatedAt: new Date().toISOString()
                           });
                         }}
-                        placeholder="Por que você descartou essa vaga? (ex: Salário baixo, stack diferente, localização...)"
+                        placeholder="Anote aqui o motivo da rejeição, descarte ou observações sobre o mismatch..."
                         className="w-full bg-transparent text-sm text-red-900 outline-none placeholder:text-red-300 min-h-[100px] resize-none"
                       />
                     </div>
@@ -1296,12 +1584,16 @@ export default function Applications() {
                 )}
 
                 {/* Automation Section */}
-                {generating && (
-                  <div ref={genStatusRef} className="bg-blue-50 p-4 rounded-xl border border-blue-100 flex items-center gap-3 animate-pulse">
-                    <Loader2 className="animate-spin text-blue-600" size={20} />
-                    <span className="text-sm font-medium text-blue-700">{genStatus}</span>
-                  </div>
-                )}
+                <div id="gen-progress-applications" className="pt-4">
+                  {(generating || generatingTips) && (
+                    <div ref={genStatusRef} className="bg-blue-50 p-4 rounded-xl border border-blue-100 flex items-center gap-3 animate-pulse">
+                      <Loader2 className="animate-spin text-blue-600" size={20} />
+                      <span className="text-sm font-medium text-blue-700">
+                        {generating ? genStatus : 'Gerando guia de preparação para entrevista...'}
+                      </span>
+                    </div>
+                  )}
+                </div>
 
                 {/* Operations Section */}
                 <div className="pt-6 border-t border-slate-100 grid grid-cols-2 gap-8">
@@ -1310,31 +1602,37 @@ export default function Applications() {
                     <div className="space-y-2">
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Status Atual:</span>
-                        <select 
-                          value={selectedApp.status}
-                          onChange={(e) => updateStatus(selectedApp.id, e.target.value)}
-                          className={cn(
-                            "text-[10px] font-bold px-2 py-1 rounded-full border outline-none cursor-pointer appearance-none text-center min-w-[120px]",
-                            selectedApp.status === '⏳ Input IA' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                            selectedApp.status === '⚙️ Gerar Docs' ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                            selectedApp.status === '✅ Aplicar' ? 'bg-green-50 text-green-700 border-green-200' :
-                            selectedApp.status === '📩 Triagem' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' :
-                            selectedApp.status === '🗑️ Descarte' ? 'bg-red-50 text-red-700 border-red-200' :
-                            'bg-slate-50 text-slate-600 border-slate-200'
-                          )}
-                        >
-                          <option value="📥 Nova">📥 Nova</option>
-                          <option value="⏳ Input IA">⏳ Input IA</option>
-                          <option value="⚙️ Gerar Docs">⚙️ Gerar Docs</option>
-                          <option value="✅ Aplicar">✅ Aplicar</option>
-                          <option value="📩 Triagem">📩 Triagem</option>
-                          <option value="🕰️ Feedback">🕰️ Feedback</option>
-                          <option value="🗣️ Entrevistas">🗣️ Entrevistas</option>
-                          <option value="🏆 Proposta">🏆 Proposta</option>
-                          <option value="🤝 Sucesso">🤝 Sucesso</option>
-                          <option value="❌ Rejeitada">❌ Rejeitada</option>
-                          <option value="🗑️ Descarte">🗑️ Descarte</option>
-                        </select>
+                        <div className="relative">
+                          <select 
+                            value={selectedApp.status}
+                            onChange={(e) => updateStatus(selectedApp.id, e.target.value)}
+                            className={cn(
+                              "text-[10px] font-bold px-3 py-1.5 rounded-full border outline-none cursor-pointer appearance-none text-center min-w-[140px] transition-colors pr-8",
+                              getStatusStyle(selectedApp.status).bg,
+                              getStatusStyle(selectedApp.status).text,
+                              getStatusStyle(selectedApp.status).border
+                            )}
+                          >
+                            <option value="📥 Nova">📥 Nova</option>
+                            <option value="⏳ Input IA">⏳ Input IA</option>
+                            <option value="⚙️ Gerar Docs">⚙️ Gerar Docs</option>
+                            <option value="✅ Aplicar">✅ Aplicar</option>
+                            <option value="📩 Triagem">📩 Triagem</option>
+                            <option value="🕰️ Feedback">🕰️ Feedback</option>
+                            <option value="🗣️ Entrevistas">🗣️ Entrevistas</option>
+                            <option value="🏆 Proposta">🏆 Proposta</option>
+                            <option value="🤝 Sucesso">🤝 Sucesso</option>
+                            <option value="⚠️ Mismatch">⚠️ Mismatch</option>
+                            <option value="❌ Rejeitada">❌ Rejeitada</option>
+                            <option value="🗑️ Descarte">🗑️ Descarte</option>
+                          </select>
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none opacity-50">
+                            <ChevronDown size={10} className={getStatusStyle(selectedApp.status).text} />
+                          </div>
+                          <div className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none">
+                            {getStatusStyle(selectedApp.status).icon}
+                          </div>
+                        </div>
                       </div>
                       <div className="flex items-center justify-between text-sm">
                         <span className="text-slate-500">Link Pasta Drive:</span>
@@ -1432,7 +1730,7 @@ export default function Applications() {
                           <Send size={18} />
                           Marcar como Aplicada
                         </button>
-                      ) : genStep === 'idle' && (
+                      ) : genStep === 'idle' && ['📥 Nova', '⏳ Input IA', '⚙️ Gerar Docs'].includes(selectedApp.status) && (
                         <button 
                           onClick={() => handleGenerateApplication()}
                           disabled={generating}
@@ -1452,7 +1750,7 @@ export default function Applications() {
                         </button>
                       )}
 
-                      {selectedApp.link && (
+                      {selectedApp.link && selectedApp.status === '✅ Aplicar' && (
                         <a 
                           href={selectedApp.link}
                           target="_blank"
