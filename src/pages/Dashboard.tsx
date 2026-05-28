@@ -504,7 +504,8 @@ export default function Dashboard() {
       });
 
       // Derive high priority apps (sorted by totalScore desc, limit 5)
-      const sortedByScoreDesc = [...all].sort((a, b) => 
+      const pendingPriorityApps = all.filter((a: any) => pendingActionStatuses.includes(a.status));
+      const sortedByScoreDesc = pendingPriorityApps.sort((a, b) => 
         (b.totalScore || 0) - (a.totalScore || 0)
       );
       setRecentApps(sortedByScoreDesc.slice(0, 5));
@@ -978,12 +979,6 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <div className="space-y-4">
-                  <h4 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Estratégia de Abertura</h4>
-                  <div className="bg-indigo-50/30 p-6 rounded-xl border border-indigo-100 text-sm text-indigo-900 leading-relaxed italic">
-                    "{selectedApp.openingStrategy || 'Sem estratégia definida.'}"
-                  </div>
-                </div>
 
                 {/* Job Description */}
                 <div className="space-y-4">
